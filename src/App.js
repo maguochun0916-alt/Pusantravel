@@ -47,11 +47,33 @@ const USERS = [
 
 const EXCHANGE_RATE_TWD_TO_KRW = 42.5;
 
+const CATEGORIES = [
+  { name: "飲食", icon: Utensils },
+  { name: "交通", icon: Bus },
+  { name: "住宿", icon: Home },
+  { name: "購物", icon: ShoppingBag },
+  { name: "機票", icon: Plane },
+];
+
+const SPLIT_OPTIONS = [
+  { id: "大家共同", label: "四人平分", desc: "黃馬邱袁", icon: Users },
+  { id: "黃馬共同", label: "黃馬負擔", desc: "子庭+國郡", icon: Users },
+  { id: "邱袁共同", label: "邱袁負擔", desc: "含樂樂👶", icon: Baby },
+  { id: "個人專屬", label: "自己付", desc: "僅墊錢者", icon: User },
+];
+
+const getSplitIndividuals = (type, payerName) => {
+  if (type === "大家共同") return ["黃子庭", "馬國郡", "邱靖涵", "袁家駿"];
+  if (type === "黃馬共同") return ["黃子庭", "馬國郡"];
+  if (type === "邱袁共同") return ["邱靖涵", "袁家駿"];
+  if (type === "個人專屬") return [payerName];
+  return [type];
+};
+
 // ==========================================
 // 🚀 主應用程式元件
 // ==========================================
 export default function App() {
-  // 加入 localStorage 記憶登入狀態
   const [currentUser, setCurrentUser] = useState(() => {
     if (typeof window !== "undefined") {
       return localStorage.getItem("busan_trip_user") || null;
@@ -59,10 +81,9 @@ export default function App() {
     return null;
   });
 
-  const [activeTab, setActiveTab] = useState("expenses"); // 'expenses', 'tools'
+  const [activeTab, setActiveTab] = useState("expenses");
   const [showCalculator, setShowCalculator] = useState(false);
 
-  // --- 記帳狀態 (In-Memory，未來可替換為 Firebase) ---
   const [expenses, setExpenses] = useState([
     {
       id: 1,
@@ -102,7 +123,6 @@ export default function App() {
     },
   ]);
 
-  // --- 行李清單狀態 ---
   const [packingItems, setPackingItems] = useState([
     {
       id: 1,
@@ -125,19 +145,16 @@ export default function App() {
     "🧥 防風保暖外套 (海風大)",
   ]);
 
-  // 登入處理
   const handleLogin = (name) => {
     setCurrentUser(name);
     localStorage.setItem("busan_trip_user", name);
   };
 
-  // 登出處理
   const handleLogout = () => {
     setCurrentUser(null);
     localStorage.removeItem("busan_trip_user");
   };
 
-  // --- 登入畫面 ---
   if (!currentUser) {
     return (
       <div className="min-h-screen bg-stone-100 flex flex-col items-center justify-center p-4 font-sans text-stone-800">
@@ -195,7 +212,6 @@ export default function App() {
     );
   }
 
-  // --- 主畫面 ---
   return (
     <div className="min-h-screen bg-stone-100 max-w-md mx-auto relative font-sans overflow-x-hidden text-stone-800 antialiased shadow-2xl">
       <style>{`
@@ -205,7 +221,6 @@ export default function App() {
         .animate-slide-up { animation: slide-up 0.3s cubic-bezier(0.16, 1, 0.3, 1); }
       `}</style>
 
-      {/* Header */}
       <header className="bg-stone-900 text-white pt-12 pb-5 px-6 rounded-b-[2rem] shadow-lg z-10 flex-shrink-0 relative">
         <div className="flex justify-between items-center mb-1 relative z-10">
           <div>
@@ -223,7 +238,6 @@ export default function App() {
         </div>
       </header>
 
-      {/* 懸浮計算機按鈕 */}
       <button
         onClick={() => setShowCalculator(true)}
         className="absolute right-4 bottom-24 z-30 w-14 h-14 bg-stone-900 text-white rounded-full shadow-[0_8px_30px_rgb(0,0,0,0.3)] flex items-center justify-center hover:scale-105 active:scale-95 transition-all"
@@ -231,7 +245,6 @@ export default function App() {
         <Calculator className="w-6 h-6" />
       </button>
 
-      {/* 內容區塊 */}
       <main className="flex-1 overflow-y-auto pb-24 relative bg-stone-50 min-h-[80vh]">
         {activeTab === "expenses" && (
           <ExpenseView
@@ -250,7 +263,6 @@ export default function App() {
         )}
       </main>
 
-      {/* 底部導覽列 */}
       <nav className="fixed bottom-0 w-full max-w-md bg-white/95 backdrop-blur-md border-t border-stone-200 flex justify-around p-2 pb-[calc(env(safe-area-inset-bottom)+1rem)] z-40">
         <button
           onClick={() => setActiveTab("expenses")}
@@ -284,7 +296,6 @@ export default function App() {
         </button>
       </nav>
 
-      {/* 匯率計算機 Modal */}
       {showCalculator && (
         <QuickCalculatorModal onClose={() => setShowCalculator(false)} />
       )}
@@ -369,7 +380,6 @@ function ExpenseView({ expenses, setExpenses, currentUser }) {
   const [showSettlement, setShowSettlement] = useState(false);
   const [showSettledHistory, setShowSettledHistory] = useState(false);
 
-  // 表單狀態
   const [title, setTitle] = useState("");
   const [category, setCategory] = useState("飲食");
   const [amountTWD, setAmountTWD] = useState("");
@@ -377,34 +387,10 @@ function ExpenseView({ expenses, setExpenses, currentUser }) {
   const [payer, setPayer] = useState(currentUser);
   const [splitType, setSplitType] = useState("大家共同");
 
-  // 專屬費用(子母帳單) 狀態
   const [hasExtra, setHasExtra] = useState(false);
   const [extraTarget, setExtraTarget] = useState("邱袁共同");
   const [extraAmountKRW, setExtraAmountKRW] = useState("");
   const [extraAmountTWD, setExtraAmountTWD] = useState("");
-
-  const categories = [
-    { name: "飲食", icon: Utensils },
-    { name: "交通", icon: Bus },
-    { name: "住宿", icon: Home },
-    { name: "購物", icon: ShoppingBag },
-    { name: "機票", icon: Plane },
-  ];
-
-  const splitOptions = [
-    { id: "大家共同", label: "四人平分", desc: "黃馬邱袁", icon: Users },
-    { id: "黃馬共同", label: "黃馬負擔", desc: "子庭+國郡", icon: Users },
-    { id: "邱袁共同", label: "邱袁負擔", desc: "含樂樂👶", icon: Baby },
-    { id: "個人專屬", label: "自己付", desc: `僅墊錢者`, icon: User },
-  ];
-
-  const getSplitIndividuals = (type, payerName) => {
-    if (type === "大家共同") return ["黃子庭", "馬國郡", "邱靖涵", "袁家駿"];
-    if (type === "黃馬共同") return ["黃子庭", "馬國郡"];
-    if (type === "邱袁共同") return ["邱靖涵", "袁家駿"];
-    if (type === "個人專屬") return [payerName];
-    return [type];
-  };
 
   const pendingExpenses = expenses.filter((exp) => !exp.isSettled);
   const settledExpenses = expenses.filter((exp) => exp.isSettled);
@@ -656,7 +642,7 @@ function ExpenseView({ expenses, setExpenses, currentUser }) {
         ) : (
           pendingExpenses.map((exp) => {
             const catInfo =
-              categories.find((c) => c.name === exp.category) || categories[0];
+              CATEGORIES.find((c) => c.name === exp.category) || CATEGORIES[0];
             const CatIcon = catInfo.icon;
             let badgeColor = "bg-stone-100 text-stone-500";
             if (exp.splitType === "黃馬共同")
@@ -744,8 +730,8 @@ function ExpenseView({ expenses, setExpenses, currentUser }) {
             <div className="space-y-3 mt-4 animate-in slide-in-from-top-4 opacity-70 hover:opacity-100 transition-opacity">
               {settledExpenses.map((exp) => {
                 const catInfo =
-                  categories.find((c) => c.name === exp.category) ||
-                  categories[0];
+                  CATEGORIES.find((c) => c.name === exp.category) ||
+                  CATEGORIES[0];
                 const CatIcon = catInfo.icon;
                 return (
                   <div
@@ -887,7 +873,7 @@ function ExpenseView({ expenses, setExpenses, currentUser }) {
                   剩餘金額由誰負擔？(Main Split)
                 </label>
                 <div className="grid grid-cols-2 gap-2">
-                  {splitOptions.map((opt) => {
+                  {SPLIT_OPTIONS.map((opt) => {
                     const OptIcon = opt.icon;
                     const isActive = splitType === opt.id;
                     return (
@@ -1022,7 +1008,7 @@ function ExpenseView({ expenses, setExpenses, currentUser }) {
                   分類標籤
                 </label>
                 <div className="flex gap-2 overflow-x-auto pb-1 hide-scrollbar">
-                  {categories.map((c) => {
+                  {CATEGORIES.map((c) => {
                     const Icon = c.icon;
                     return (
                       <button
