@@ -8,7 +8,7 @@ import {
   Baby, Users, Calculator, CheckCircle2, Circle, 
   ArrowRightCircle, Receipt, Package, CheckSquare,
   CheckCircle, Undo2, ChevronDown, ChevronUp, SplitSquareVertical,
-  ArrowDown, Loader2, Edit3, Eye
+  ArrowDown, Loader2, Edit3, Eye, PieChart
 } from 'lucide-react';
 
 // ==========================================
@@ -309,12 +309,12 @@ export default function App() {
         .animate-slide-up { animation: slide-up 0.3s cubic-bezier(0.16, 1, 0.3, 1); }
       `}</style>
 
-      {/* Undo Notification Bar */}
+      {/* Undo Notification Bar (已移至下方並提升質感) */}
       {undoNotification && (
-        <div className="fixed top-6 left-1/2 -translate-x-1/2 z-[99999] bg-stone-900 text-white px-5 py-3 rounded-2xl shadow-xl flex items-center gap-4 animate-slide-up w-11/12 max-w-sm">
-          <span className="flex-1 text-xs font-bold truncate">{undoNotification.msg}</span>
-          <button onClick={handleUndoExecute} className="flex items-center gap-1 bg-white text-stone-900 px-3 py-1.5 rounded-lg text-xs font-black active:scale-95 transition-transform shadow-sm">
-            <Undo2 className="w-3.5 h-3.5" /> 復原
+        <div className="fixed bottom-28 left-1/2 -translate-x-1/2 z-[99999] bg-stone-800/95 backdrop-blur-md text-white px-5 py-3.5 rounded-2xl shadow-2xl flex items-center justify-between gap-4 animate-slide-up w-11/12 max-w-sm border border-stone-700">
+          <span className="flex-1 text-sm font-medium truncate">{undoNotification.msg}</span>
+          <button onClick={handleUndoExecute} className="flex items-center gap-1.5 bg-white/10 hover:bg-white/20 text-white px-4 py-2 rounded-xl text-xs font-bold active:scale-95 transition-all">
+            <Undo2 className="w-4 h-4" /> 復原
           </button>
         </div>
       )}
@@ -418,6 +418,7 @@ function QuickCalculatorModal({ onClose }) {
 function ExpenseView({ expenses, currentUser, onAddExpense, onUpdateExpense, onDeleteExpense, onToggleSettle }) {
   const [showAddExpense, setShowAddExpense] = useState(false);
   const [showSettlement, setShowSettlement] = useState(false);
+  const [showTotalCostModal, setShowTotalCostModal] = useState(false); // 新增總花費狀態
   const [showSettledHistory, setShowSettledHistory] = useState(false);
   const [expandedDetails, setExpandedDetails] = useState({}); 
   
@@ -459,6 +460,32 @@ function ExpenseView({ expenses, currentUser, onAddExpense, onUpdateExpense, onD
     });
     return costs;
   }, [pendingExpenses]);
+
+  // ⭐️ 新增：計算「所有款項」(含已結清) 的每人總花費
+  const totalPersonalCosts = useMemo(() => {
+    const costs = { '黃子庭': 0, '馬國郡': 0, '邱靖涵': 0, '袁家駿': 0 };
+    
+    expenses.forEach(exp => {
+      let mainAmount = exp.amountTWD;
+
+      if (exp.extra) {
+        mainAmount -= exp.extra.amountTWD;
+        const extraTargets = getSplitIndividuals(exp.extra.target, exp.payer);
+        const extraPerPerson = exp.extra.amountTWD / extraTargets.length;
+        extraTargets.forEach(person => { if(costs[person] !== undefined) costs[person] += extraPerPerson; });
+      }
+
+      const mainTargets = getSplitIndividuals(exp.splitType, exp.payer);
+      if (mainTargets.length > 0) {
+        const mainPerPerson = mainAmount / mainTargets.length;
+        mainTargets.forEach(person => { if(costs[person] !== undefined) costs[person] += mainPerPerson; });
+      }
+    });
+    return costs;
+  }, [expenses]);
+
+  // ⭐️ 新增：計算整趟旅程總開銷
+  const totalTripCostTWD = expenses.reduce((sum, exp) => sum + exp.amountTWD, 0);
 
   const handleEditClick = (exp) => {
     setEditingId(exp.id);
@@ -535,9 +562,14 @@ function ExpenseView({ expenses, currentUser, onAddExpense, onUpdateExpense, onD
               <span className="text-xl text-stone-500 font-bold">$</span>{pendingTotalTWD.toLocaleString()}
             </h2>
           </div>
-          <button onClick={() => setShowSettlement(true)} className="bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold px-4 py-2.5 rounded-xl shadow-lg shadow-blue-900/50 transition-all flex items-center gap-1.5 active:scale-95">
-            <Receipt className="w-4 h-4" /> 總結算表
-          </button>
+          <div className="flex flex-col gap-2">
+            <button onClick={() => setShowSettlement(true)} className="bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold px-4 py-2.5 rounded-xl shadow-lg shadow-blue-900/50 transition-all flex items-center justify-center gap-1.5 active:scale-95">
+              <Receipt className="w-4 h-4" /> 總結算表
+            </button>
+            <button onClick={() => setShowTotalCostModal(true)} className="bg-stone-700 hover:bg-stone-600 text-white text-xs font-bold px-4 py-2.5 rounded-xl shadow-lg transition-all flex items-center justify-center gap-1.5 active:scale-95">
+              <PieChart className="w-4 h-4" /> 旅程總花費
+            </button>
+          </div>
         </div>
 
         <div className="bg-stone-800/50 rounded-2xl p-4 border border-stone-700/50 relative z-10">
@@ -653,29 +685,68 @@ function ExpenseView({ expenses, currentUser, onAddExpense, onUpdateExpense, onD
             {showSettledHistory ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
           </button>
           {showSettledHistory && (
-            <div className="space-y-3 mt-4 animate-in slide-in-from-top-4 opacity-70 hover:opacity-100 transition-opacity">
+            <div className="space-y-3 mt-4 animate-slide-up transition-all">
               {settledExpenses.map(exp => {
                 const catInfo = CATEGORIES.find(c => c.name === exp.category) || CATEGORIES[0];
                 const CatIcon = catInfo.icon;
+                const specificTransactions = calculateSpecificSettlement([exp]);
+
                 return (
-                  <div key={exp.id} className="bg-stone-100 p-3.5 rounded-[1.5rem] border border-stone-200 flex items-center justify-between group">
-                    <div className="flex items-center gap-3 opacity-60 cursor-pointer" onClick={() => handleEditClick(exp)}>
-                      <div className="w-10 h-10 rounded-xl bg-stone-200 flex items-center justify-center text-stone-500"><CatIcon className="w-4 h-4" strokeWidth={1.5} /></div>
-                      <div>
-                        <h4 className="font-bold text-stone-600 text-xs mb-1 line-through">{exp.title}</h4>
-                        <div className="flex items-center gap-1.5 flex-wrap">
-                          <span className="text-[9px] text-stone-400 font-bold">${exp.amountTWD.toLocaleString()}</span>
-                          <span className="text-[9px] bg-stone-200 text-stone-500 px-1.5 py-0.5 rounded font-bold">{exp.payer} 墊付</span>
+                  <div key={exp.id} className="bg-white p-4 rounded-[1.5rem] border border-stone-200 flex flex-col transition-all relative overflow-hidden group shadow-sm">
+                    <div className="flex items-center justify-between w-full">
+                      <div className="flex items-center gap-3 relative z-10 w-full overflow-hidden cursor-pointer hover:opacity-80 transition-opacity" onClick={() => handleEditClick(exp)}>
+                        <div className="w-11 h-11 rounded-[14px] bg-stone-100 flex items-center justify-center text-stone-400 relative group-hover:bg-stone-200 transition-colors">
+                           <CatIcon className="w-5 h-5 group-hover:opacity-0 transition-opacity" strokeWidth={1.5} />
+                           <Edit3 className="w-5 h-5 absolute text-blue-500 opacity-0 group-hover:opacity-100 transition-opacity" strokeWidth={2}/>
+                        </div>
+                        <div className="overflow-hidden w-full">
+                          <h4 className="font-bold text-stone-500 text-sm mb-1 truncate line-through decoration-stone-300">{exp.title}</h4>
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="text-[10px] bg-stone-50 text-stone-400 px-1.5 py-0.5 rounded font-bold border border-stone-100">{exp.payer} 墊付</span>
+                            {exp.extra && (
+                              <span className="text-[10px] bg-stone-50 text-stone-400 px-1.5 py-0.5 rounded font-bold border border-stone-100 flex items-center gap-1">
+                                <SplitSquareVertical className="w-3 h-3"/> 含專屬
+                              </span>
+                            )}
+                            <span className="text-[11px] font-black text-stone-400 ml-1 block sm:inline line-through decoration-stone-300">${exp.amountTWD.toLocaleString()}</span>
+                          </div>
                         </div>
                       </div>
+                      <div className="flex items-center gap-1.5 flex-shrink-0 relative z-10 pl-2">
+                        <button onClick={() => onToggleSettle(exp)} className="flex flex-col items-center justify-center bg-stone-50 text-stone-500 hover:bg-stone-100 hover:text-stone-800 border border-stone-200 px-2.5 py-2 rounded-xl transition-colors active:scale-95 shadow-sm" title="取消結清，加回待結算">
+                          <Undo2 className="w-4 h-4" /><span className="text-[9px] font-bold mt-0.5">復原</span>
+                        </button>
+                        <button onClick={() => onDeleteExpense(exp.id)} className="p-2 text-stone-300 hover:text-red-500 hover:bg-red-50 rounded-xl transition-colors active:scale-95">
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
                     </div>
-                    <div className="flex items-center gap-1 flex-shrink-0">
-                      <button onClick={() => onToggleSettle(exp)} className="flex flex-col items-center justify-center text-stone-400 hover:text-stone-700 bg-white border border-stone-200 px-3 py-1.5 rounded-xl transition-colors active:scale-95 shadow-sm" title="取消結清，加回待結算">
-                        <Undo2 className="w-3.5 h-3.5" /><span className="text-[9px] font-bold mt-0.5">復原</span>
+
+                    <div className="mt-3 pt-3 border-t border-stone-100">
+                      <button onClick={() => toggleDetails(exp.id)} className="flex items-center gap-1 text-[11px] font-bold text-stone-400 hover:text-stone-600 transition-colors w-full text-left">
+                        <Eye className="w-3.5 h-3.5" /> 
+                        {expandedDetails[exp.id] ? '隱藏此筆拆帳明細' : '展開這筆帳誰該給誰？'}
+                        {expandedDetails[exp.id] ? <ChevronUp className="w-3.5 h-3.5 ml-auto" /> : <ChevronDown className="w-3.5 h-3.5 ml-auto" />}
                       </button>
-                      <button onClick={() => onDeleteExpense(exp.id)} className="p-1.5 text-stone-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors active:scale-95">
-                        <Trash2 className="w-3 h-3" />
-                      </button>
+                      
+                      {expandedDetails[exp.id] && (
+                        <div className="mt-2 bg-stone-50 rounded-xl p-3 space-y-1.5 animate-slide-up border border-stone-200/60">
+                          {specificTransactions.length === 0 ? (
+                            <span className="text-xs text-stone-400 font-bold">此筆款項無人需轉帳 (全由墊款人自行負擔)</span>
+                          ) : (
+                            specificTransactions.map((t, idx) => (
+                              <div key={idx} className="flex items-center justify-between text-xs text-stone-500">
+                                 <div className="flex items-center gap-1.5">
+                                   <span className="font-bold text-stone-500">{t.from}</span>
+                                   <span className="text-stone-400 font-medium text-[10px]">應給</span>
+                                   <span className="font-bold text-stone-500">{t.to}</span>
+                                 </div>
+                                 <span className="font-black text-stone-400">${t.amount.toLocaleString()}</span>
+                              </div>
+                            ))
+                          )}
+                        </div>
+                      )}
                     </div>
                   </div>
                 );
@@ -826,6 +897,38 @@ function ExpenseView({ expenses, currentUser, onAddExpense, onUpdateExpense, onD
                  </div>
                )}
                <button onClick={() => setShowSettlement(false)} className="w-full mt-6 py-3.5 bg-stone-200 text-stone-800 rounded-xl font-bold hover:bg-stone-300 transition-colors active:scale-95">我知道了</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ⭐️ 新增：旅程總花費 Modal */}
+      {showTotalCostModal && (
+        <div className="fixed inset-0 bg-stone-900/60 z-[9999] flex items-center justify-center p-4 backdrop-blur-md" onClick={() => setShowTotalCostModal(false)}>
+          <div className="bg-white rounded-[2rem] w-full max-w-sm overflow-hidden animate-slide-up shadow-2xl" onClick={e => e.stopPropagation()}>
+            <div className="bg-stone-900 p-6 text-white text-center relative overflow-hidden">
+               <div className="absolute -top-10 -right-10 w-32 h-32 bg-white/5 rounded-full blur-2xl"></div>
+               <PieChart className="w-8 h-8 mx-auto mb-3 text-stone-300" />
+               <h2 className="text-xl font-black tracking-wide">每人總花費統整</h2>
+               <p className="text-stone-400 text-xs mt-1 font-medium">包含已結清與未結清的所有款項</p>
+            </div>
+            <div className="p-6 bg-stone-50">
+               <div className="flex justify-between items-center mb-5 px-2">
+                  <span className="font-bold text-stone-500 text-sm">旅程總開銷</span>
+                  <span className="font-black text-xl text-stone-800">${totalTripCostTWD.toLocaleString()}</span>
+               </div>
+               <div className="space-y-3">
+                 {Object.entries(totalPersonalCosts).sort((a,b)=>b[1]-a[1]).map(([name, cost], i) => (
+                   <div key={i} className="bg-white p-4 rounded-2xl border border-stone-200 flex items-center justify-between shadow-sm">
+                     <div className="flex items-center gap-3">
+                        <div className="w-9 h-9 rounded-full bg-stone-100 flex items-center justify-center font-bold text-stone-600 text-sm border border-stone-200">{name[0]}</div>
+                        <span className="font-bold text-stone-700">{name}</span>
+                     </div>
+                     <span className="font-black text-lg text-stone-800">${Math.round(cost).toLocaleString()}</span>
+                   </div>
+                 ))}
+               </div>
+               <button onClick={() => setShowTotalCostModal(false)} className="w-full mt-6 py-3.5 bg-stone-200 text-stone-800 rounded-xl font-bold hover:bg-stone-300 transition-colors active:scale-95">關閉</button>
             </div>
           </div>
         </div>
