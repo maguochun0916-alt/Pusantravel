@@ -8,13 +8,12 @@ import {
   Baby, Users, Calculator, CheckCircle2, Circle, 
   ArrowRightCircle, Receipt, Package, CheckSquare,
   CheckCircle, Undo2, ChevronDown, ChevronUp, SplitSquareVertical,
-  ArrowDown, Loader2
+  ArrowDown, Loader2, Edit3, Eye
 } from 'lucide-react';
 
 // ==========================================
 // ☁️ Firebase 雲端資料庫設定區
 // ==========================================
-// ⚠️ 請把你在 Firebase 後台複製的金鑰貼在這邊替換掉：
 const firebaseConfig = {
   apiKey: "AIzaSyBBmyWNbb9qgyT8ylNMTmUctgsBFpNn_Dg",
   authDomain: "pusan-d58e1.firebaseapp.com",
@@ -64,15 +63,55 @@ const getSplitIndividuals = (type, payerName) => {
 };
 
 // ==========================================
+// 核心演算法：計算特定花費清單的轉帳結果
+// ==========================================
+const calculateSpecificSettlement = (expenseList) => {
+  const balances = { '黃子庭': 0, '馬國郡': 0, '邱靖涵': 0, '袁家駿': 0 };
+  
+  expenseList.forEach(exp => {
+    if (!balances.hasOwnProperty(exp.payer)) balances[exp.payer] = 0;
+    balances[exp.payer] += exp.amountTWD; // 代墊者獲得正資產
+    
+    let mainAmount = exp.amountTWD;
+
+    if (exp.extra) {
+      mainAmount -= exp.extra.amountTWD;
+      const extraTargets = getSplitIndividuals(exp.extra.target, exp.payer);
+      const extraPerPerson = exp.extra.amountTWD / extraTargets.length;
+      extraTargets.forEach(person => { if(balances[person] !== undefined) balances[person] -= extraPerPerson; });
+    }
+
+    const mainTargets = getSplitIndividuals(exp.splitType, exp.payer);
+    if (mainTargets.length > 0) {
+      const mainPerPerson = mainAmount / mainTargets.length;
+      mainTargets.forEach(person => { if(balances[person] !== undefined) balances[person] -= mainPerPerson; }); 
+    }
+  });
+
+  let debtors = []; let creditors = [];
+  for (let person in balances) {
+    if (balances[person] < -0.1) debtors.push({ name: person, amount: Math.abs(balances[person]) });
+    else if (balances[person] > 0.1) creditors.push({ name: person, amount: balances[person] });
+  }
+  debtors.sort((a, b) => b.amount - a.amount); creditors.sort((a, b) => b.amount - a.amount);
+  
+  const transactions = [];
+  let i = 0; let j = 0;
+  while (i < debtors.length && j < creditors.length) {
+    let amount = Math.min(debtors[i].amount, creditors[j].amount);
+    if (amount > 0.5) transactions.push({ from: debtors[i].name, to: creditors[j].name, amount: Math.round(amount) });
+    debtors[i].amount -= amount; creditors[j].amount -= amount;
+    if (debtors[i].amount < 0.1) i++;
+    if (creditors[j].amount < 0.1) j++;
+  }
+  return transactions;
+};
+
+// ==========================================
 // 🚀 主應用程式元件
 // ==========================================
 export default function App() {
-  const [currentUser, setCurrentUser] = useState(() => {
-    if (typeof window !== "undefined") {
-      return localStorage.getItem("busan_trip_user") || null;
-    }
-    return null;
-  });
+  const [currentUser, setCurrentUser] = useState(null);
   
   const [activeTab, setActiveTab] = useState('expenses'); 
   const [showCalculator, setShowCalculator] = useState(false);
@@ -82,6 +121,10 @@ export default function App() {
   const [expenses, setExpenses] = useState([]);
   const [packingItems, setPackingItems] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [dbError, setDbError] = useState(null); // 新增：用來顯示漂亮的錯誤畫面取代 alert
+  
+  // Undo 復原系統狀態
+  const [undoNotification, setUndoNotification] = useState(null);
 
   // 初始化 Firebase 匿名登入
   useEffect(() => {
@@ -90,6 +133,7 @@ export default function App() {
         await signInAnonymously(auth);
       } catch (error) {
         console.error("驗證失敗:", error);
+        setDbError(error.message);
       }
     };
     initAuth();
@@ -109,7 +153,11 @@ export default function App() {
         setExpenses(loadedExpenses);
         setIsLoading(false);
       },
-      (err) => console.error("讀取記帳失敗", err)
+      (err) => {
+        console.error("讀取記帳失敗", err);
+        setDbError(err.message);
+        setIsLoading(false);
+      }
     );
 
     const unsubPacking = onSnapshot(
@@ -125,18 +173,49 @@ export default function App() {
     return () => { unsubExpenses(); unsubPacking(); };
   }, [authUser]);
 
-  // --- 雲端資料操作函式 ---
+  // --- 復原系統機制 ---
+  const triggerUndoNotification = (msg, undoAction) => {
+    const id = Date.now();
+    setUndoNotification({ id, msg, action: undoAction });
+    // 5秒後自動關閉提示
+    setTimeout(() => {
+      setUndoNotification(current => current && current.id === id ? null : current);
+    }, 5000);
+  };
+
+  const handleUndoExecute = async () => {
+    if (undoNotification && undoNotification.action) {
+      await undoNotification.action();
+      setUndoNotification(null);
+    }
+  };
+
+  // --- 雲端資料操作函式 (加入復原追蹤) ---
   const addExpense = async (data) => {
     const docId = Date.now().toString();
     await setDoc(doc(db, 'artifacts', PROJECT_ID, 'expenses', docId), { ...data, id: docId });
-  };
-  const deleteExpense = async (id) => {
-    await deleteDoc(doc(db, 'artifacts', PROJECT_ID, 'expenses', id.toString()));
-  };
-  const toggleSettleStatus = async (exp) => {
-    await setDoc(doc(db, 'artifacts', PROJECT_ID, 'expenses', exp.id.toString()), { ...exp, isSettled: !exp.isSettled });
+    triggerUndoNotification(`已新增「${data.title}」`, () => deleteDoc(doc(db, 'artifacts', PROJECT_ID, 'expenses', docId)));
   };
 
+  const updateExpense = async (id, newData) => {
+    const oldData = expenses.find(e => e.id === id);
+    await setDoc(doc(db, 'artifacts', PROJECT_ID, 'expenses', id.toString()), { ...newData, id: id.toString() });
+    triggerUndoNotification(`已修改「${newData.title}」`, () => setDoc(doc(db, 'artifacts', PROJECT_ID, 'expenses', id.toString()), oldData));
+  };
+
+  const deleteExpense = async (id) => {
+    const oldData = expenses.find(e => e.id === id);
+    await deleteDoc(doc(db, 'artifacts', PROJECT_ID, 'expenses', id.toString()));
+    triggerUndoNotification(`已刪除「${oldData?.title}」`, () => setDoc(doc(db, 'artifacts', PROJECT_ID, 'expenses', id.toString()), oldData));
+  };
+
+  const toggleSettleStatus = async (exp) => {
+    const oldData = expenses.find(e => e.id === exp.id);
+    await setDoc(doc(db, 'artifacts', PROJECT_ID, 'expenses', exp.id.toString()), { ...exp, isSettled: !exp.isSettled });
+    triggerUndoNotification(exp.isSettled ? `已取消結清「${exp.title}」` : `已結清「${exp.title}」`, () => setDoc(doc(db, 'artifacts', PROJECT_ID, 'expenses', exp.id.toString()), oldData));
+  };
+
+  // 行李操作
   const addPackingItem = async (data) => {
     const docId = Date.now().toString();
     await setDoc(doc(db, 'artifacts', PROJECT_ID, 'packingItems', docId), { ...data, id: docId, createdAt: Date.now() });
@@ -150,19 +229,37 @@ export default function App() {
 
   const handleLogin = (name) => {
     setCurrentUser(name);
-    localStorage.setItem("busan_trip_user", name);
   };
 
   const handleLogout = () => {
     setCurrentUser(null);
-    localStorage.removeItem("busan_trip_user");
   };
+
+  // 遇到資料庫錯誤時，顯示友善的提示畫面，而不是讓畫面崩潰
+  if (dbError) {
+    return (
+      <div className="min-h-screen bg-stone-100 flex flex-col items-center justify-center p-6 text-center">
+        <div className="bg-red-50 text-red-600 p-6 rounded-[2rem] max-w-sm shadow-sm border border-red-100">
+          <h3 className="font-black text-xl mb-3 flex items-center justify-center gap-2">
+            連線被拒絕了 🚨
+          </h3>
+          <p className="text-xs font-medium mb-4 opacity-80 break-words">{dbError}</p>
+          <div className="text-left text-xs font-bold bg-white p-4 rounded-xl shadow-sm text-stone-700 leading-relaxed">
+            請確認您在 Firebase 後台是否已完成：<br/><br/>
+            1. 左側 Authentication ➔ 開啟 <span className="text-blue-500">匿名登入 (Anonymous)</span><br/>
+            2. 左側 Firestore Database ➔ <span className="text-blue-500">建立資料庫</span><br/>
+            3. 上方 Rules 標籤 ➔ 修改規則並點擊 <span className="text-emerald-500">發布</span>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   if (currentUser && isLoading) {
     return (
       <div className="min-h-screen bg-stone-100 flex flex-col items-center justify-center p-4">
         <Loader2 className="w-10 h-10 text-stone-900 animate-spin mb-4" />
-        <p className="text-stone-500 font-bold tracking-widest">載入雲端資料中...</p>
+        <p className="text-stone-500 font-bold tracking-widest">連線至雲端金庫中...</p>
       </div>
     );
   }
@@ -212,6 +309,16 @@ export default function App() {
         .animate-slide-up { animation: slide-up 0.3s cubic-bezier(0.16, 1, 0.3, 1); }
       `}</style>
 
+      {/* Undo Notification Bar */}
+      {undoNotification && (
+        <div className="fixed top-6 left-1/2 -translate-x-1/2 z-[99999] bg-stone-900 text-white px-5 py-3 rounded-2xl shadow-xl flex items-center gap-4 animate-slide-up w-11/12 max-w-sm">
+          <span className="flex-1 text-xs font-bold truncate">{undoNotification.msg}</span>
+          <button onClick={handleUndoExecute} className="flex items-center gap-1 bg-white text-stone-900 px-3 py-1.5 rounded-lg text-xs font-black active:scale-95 transition-transform shadow-sm">
+            <Undo2 className="w-3.5 h-3.5" /> 復原
+          </button>
+        </div>
+      )}
+
       <header className="bg-stone-900 text-white pt-12 pb-5 px-6 rounded-b-[2rem] shadow-lg z-10 flex-shrink-0 relative">
         <div className="flex justify-between items-center mb-1 relative z-10">
           <div>
@@ -239,6 +346,7 @@ export default function App() {
             expenses={expenses} 
             currentUser={currentUser} 
             onAddExpense={addExpense}
+            onUpdateExpense={updateExpense}
             onDeleteExpense={deleteExpense}
             onToggleSettle={toggleSettleStatus}
           />
@@ -307,11 +415,13 @@ function QuickCalculatorModal({ onClose }) {
 // ==========================================
 // 💰 記帳結算主系統元件
 // ==========================================
-function ExpenseView({ expenses, currentUser, onAddExpense, onDeleteExpense, onToggleSettle }) {
+function ExpenseView({ expenses, currentUser, onAddExpense, onUpdateExpense, onDeleteExpense, onToggleSettle }) {
   const [showAddExpense, setShowAddExpense] = useState(false);
   const [showSettlement, setShowSettlement] = useState(false);
   const [showSettledHistory, setShowSettledHistory] = useState(false);
+  const [expandedDetails, setExpandedDetails] = useState({}); 
   
+  const [editingId, setEditingId] = useState(null); 
   const [title, setTitle] = useState(''); 
   const [category, setCategory] = useState('飲食');
   const [amountTWD, setAmountTWD] = useState(''); 
@@ -350,44 +460,33 @@ function ExpenseView({ expenses, currentUser, onAddExpense, onDeleteExpense, onT
     return costs;
   }, [pendingExpenses]);
 
-  const calculateSettlement = () => {
-    const balances = { '黃子庭': 0, '馬國郡': 0, '邱靖涵': 0, '袁家駿': 0 };
-    
-    pendingExpenses.forEach(exp => {
-      balances[exp.payer] += exp.amountTWD; 
-      let mainAmount = exp.amountTWD;
-
-      if (exp.extra) {
-        mainAmount -= exp.extra.amountTWD;
-        const extraTargets = getSplitIndividuals(exp.extra.target, exp.payer);
-        const extraPerPerson = exp.extra.amountTWD / extraTargets.length;
-        extraTargets.forEach(person => { balances[person] -= extraPerPerson; });
-      }
-
-      const mainTargets = getSplitIndividuals(exp.splitType, exp.payer);
-      if (mainTargets.length > 0) {
-        const mainPerPerson = mainAmount / mainTargets.length;
-        mainTargets.forEach(person => { balances[person] -= mainPerPerson; }); 
-      }
-    });
-
-    let debtors = []; let creditors = [];
-    for (let person in balances) {
-      if (balances[person] < -0.1) debtors.push({ name: person, amount: Math.abs(balances[person]) });
-      else if (balances[person] > 0.1) creditors.push({ name: person, amount: balances[person] });
+  const handleEditClick = (exp) => {
+    setEditingId(exp.id);
+    setTitle(exp.title);
+    setCategory(exp.category);
+    setAmountTWD(exp.amountTWD.toString());
+    setAmountKRW(exp.amountKRW.toString());
+    setPayer(exp.payer);
+    setSplitType(exp.splitType);
+    if(exp.extra) {
+      setHasExtra(true);
+      setExtraTarget(exp.extra.target);
+      setExtraAmountTWD(exp.extra.amountTWD.toString());
+      setExtraAmountKRW(exp.extra.amountKRW.toString());
+    } else {
+      setHasExtra(false);
+      setExtraAmountTWD('');
+      setExtraAmountKRW('');
     }
-    debtors.sort((a, b) => b.amount - a.amount); creditors.sort((a, b) => b.amount - a.amount);
-    
-    const transactions = [];
-    let i = 0; let j = 0;
-    while (i < debtors.length && j < creditors.length) {
-      let amount = Math.min(debtors[i].amount, creditors[j].amount);
-      if (amount > 0) transactions.push({ from: debtors[i].name, to: creditors[j].name, amount: Math.round(amount) });
-      debtors[i].amount -= amount; creditors[j].amount -= amount;
-      if (debtors[i].amount < 0.1) i++;
-      if (creditors[j].amount < 0.1) j++;
-    }
-    return transactions;
+    setShowAddExpense(true);
+  };
+
+  const handleAddClick = () => {
+    setEditingId(null);
+    setTitle(''); setAmountTWD(''); setAmountKRW(''); 
+    setSplitType('大家共同'); setPayer(currentUser);
+    setHasExtra(false); setExtraTarget('邱袁共同'); setExtraAmountKRW(''); setExtraAmountTWD('');
+    setShowAddExpense(true);
   };
 
   const handleTWDChange = (e) => { const val = e.target.value; setAmountTWD(val); if (val) setAmountKRW(Math.round(parseFloat(val) * EXCHANGE_RATE_TWD_TO_KRW).toString()); else setAmountKRW(''); };
@@ -404,15 +503,23 @@ function ExpenseView({ expenses, currentUser, onAddExpense, onDeleteExpense, onT
       extraData = { target: extraTarget, amountTWD: parseFloat(extraAmountTWD), amountKRW: parseFloat(extraAmountKRW) };
     }
     
-    onAddExpense({
+    const expenseData = {
       payer, title, category, 
       amountTWD: parseFloat(amountTWD || 0), amountKRW: parseFloat(amountKRW || 0), 
-      splitType, extra: extraData, date: new Date().toISOString(), isSettled: false
-    });
+      splitType, extra: extraData, date: new Date().toISOString()
+    };
+
+    if (editingId) {
+      onUpdateExpense(editingId, expenseData);
+    } else {
+      onAddExpense({ ...expenseData, isSettled: false });
+    }
     
-    setShowAddExpense(false); setTitle(''); setAmountTWD(''); setAmountKRW(''); 
-    setSplitType('大家共同'); setPayer(currentUser);
-    setHasExtra(false); setExtraTarget('邱袁共同'); setExtraAmountKRW(''); setExtraAmountTWD('');
+    setShowAddExpense(false);
+  };
+
+  const toggleDetails = (id) => {
+    setExpandedDetails(prev => ({ ...prev, [id]: !prev[id] }));
   };
 
   return (
@@ -429,7 +536,7 @@ function ExpenseView({ expenses, currentUser, onAddExpense, onDeleteExpense, onT
             </h2>
           </div>
           <button onClick={() => setShowSettlement(true)} className="bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold px-4 py-2.5 rounded-xl shadow-lg shadow-blue-900/50 transition-all flex items-center gap-1.5 active:scale-95">
-            <Receipt className="w-4 h-4" /> 產生結算表
+            <Receipt className="w-4 h-4" /> 總結算表
           </button>
         </div>
 
@@ -450,7 +557,7 @@ function ExpenseView({ expenses, currentUser, onAddExpense, onDeleteExpense, onT
 
       <div className="flex justify-between items-center mb-4 px-1">
         <h3 className="font-black text-stone-800 text-lg tracking-tight">待結算明細</h3>
-        <button onClick={() => setShowAddExpense(true)} className="bg-stone-900 text-white p-2.5 px-4 rounded-full shadow-md hover:bg-stone-800 transition-all flex items-center gap-1 text-xs font-bold active:scale-95">
+        <button onClick={handleAddClick} className="bg-stone-900 text-white p-2.5 px-4 rounded-full shadow-md hover:bg-stone-800 transition-all flex items-center gap-1 text-xs font-bold active:scale-95">
           <Plus className="w-4 h-4" /> 記一筆
         </button>
       </div>
@@ -470,33 +577,68 @@ function ExpenseView({ expenses, currentUser, onAddExpense, onDeleteExpense, onT
             if (exp.splitType === '邱袁共同') badgeColor = 'bg-amber-50 text-amber-600 border border-amber-100';
             if (exp.splitType === '大家共同') badgeColor = 'bg-stone-800 text-white';
 
+            const specificTransactions = calculateSpecificSettlement([exp]);
+
             return (
-              <div key={exp.id} className="bg-white p-4 rounded-[1.5rem] shadow-sm border border-stone-200 flex items-center justify-between group transition-all relative overflow-hidden">
-                <div className="flex items-center gap-3 relative z-10 w-full overflow-hidden">
-                  <div className="w-11 h-11 rounded-[14px] bg-stone-50 flex items-center justify-center border border-stone-100 flex-shrink-0 text-stone-600">
-                     <CatIcon className="w-5 h-5" strokeWidth={1.5} />
-                  </div>
-                  <div className="overflow-hidden w-full">
-                    <h4 className="font-bold text-stone-800 text-sm mb-1 truncate pr-2">{exp.title}</h4>
-                    <div className="flex items-center gap-1.5 flex-wrap">
-                      <span className="text-[10px] bg-stone-100 text-stone-500 px-1.5 py-0.5 rounded font-bold">{exp.payer} 墊付</span>
-                      <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${badgeColor}`}>{exp.splitType}</span>
-                      {exp.extra && (
-                        <span className="text-[10px] bg-orange-50 text-orange-600 border border-orange-200 px-1.5 py-0.5 rounded font-bold flex items-center gap-1">
-                          <SplitSquareVertical className="w-3 h-3"/> 含 {exp.extra.target.slice(0,2)} 專屬 ${exp.extra.amountTWD.toLocaleString()}
-                        </span>
-                      )}
-                      <span className="text-[11px] font-black text-stone-900 ml-1 block sm:inline">${exp.amountTWD.toLocaleString()}</span>
+              <div key={exp.id} className="bg-white p-4 rounded-[1.5rem] shadow-sm border border-stone-200 flex flex-col transition-all relative overflow-hidden">
+                <div className="flex items-center justify-between w-full">
+                  <div className="flex items-center gap-3 relative z-10 w-full overflow-hidden cursor-pointer active:opacity-70 transition-opacity" onClick={() => handleEditClick(exp)}>
+                    <div className="w-11 h-11 rounded-[14px] bg-stone-50 flex items-center justify-center border border-stone-100 flex-shrink-0 text-stone-600 relative group">
+                       <CatIcon className="w-5 h-5 group-hover:opacity-0 transition-opacity" strokeWidth={1.5} />
+                       <Edit3 className="w-5 h-5 absolute text-blue-500 opacity-0 group-hover:opacity-100 transition-opacity" strokeWidth={2}/>
+                    </div>
+                    <div className="overflow-hidden w-full">
+                      <div className="flex items-center gap-1.5">
+                        <h4 className="font-bold text-stone-800 text-sm mb-1 truncate">{exp.title}</h4>
+                      </div>
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span className="text-[10px] bg-stone-100 text-stone-500 px-1.5 py-0.5 rounded font-bold">{exp.payer} 墊付</span>
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${badgeColor}`}>{exp.splitType}</span>
+                        {exp.extra && (
+                          <span className="text-[10px] bg-orange-50 text-orange-600 border border-orange-200 px-1.5 py-0.5 rounded font-bold flex items-center gap-1">
+                            <SplitSquareVertical className="w-3 h-3"/> 含 {exp.extra.target.slice(0,2)} 專屬
+                          </span>
+                        )}
+                        <span className="text-[11px] font-black text-stone-900 ml-1 block sm:inline">${exp.amountTWD.toLocaleString()}</span>
+                      </div>
                     </div>
                   </div>
+                  
+                  <div className="flex items-center gap-1 flex-shrink-0 relative z-10 pl-2">
+                    <button onClick={() => onToggleSettle(exp)} className="flex flex-col items-center justify-center bg-emerald-50 text-emerald-600 hover:bg-emerald-500 hover:text-white border border-emerald-100 px-2.5 py-2 rounded-xl transition-colors active:scale-95" title="標記為已結清">
+                      <CheckCircle2 className="w-4 h-4" /><span className="text-[9px] font-bold mt-0.5">結清</span>
+                    </button>
+                    <button onClick={() => onDeleteExpense(exp.id)} className="p-2 text-stone-300 hover:text-red-500 hover:bg-red-50 rounded-xl transition-colors active:scale-95">
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
                 </div>
-                <div className="flex items-center gap-1.5 flex-shrink-0 relative z-10 pl-2">
-                  <button onClick={() => onToggleSettle(exp)} className="flex flex-col items-center justify-center bg-emerald-50 text-emerald-600 hover:bg-emerald-500 hover:text-white border border-emerald-100 px-3 py-2 rounded-xl transition-colors active:scale-95" title="標記為已結清">
-                    <CheckCircle2 className="w-4 h-4" /><span className="text-[9px] font-bold mt-0.5">結清</span>
+
+                <div className="mt-3 pt-3 border-t border-stone-100/80">
+                  <button onClick={() => toggleDetails(exp.id)} className="flex items-center gap-1 text-[11px] font-bold text-stone-400 hover:text-blue-500 transition-colors w-full text-left">
+                    <Eye className="w-3.5 h-3.5" /> 
+                    {expandedDetails[exp.id] ? '隱藏此筆拆帳明細' : '展開這筆帳誰該給誰？'}
+                    {expandedDetails[exp.id] ? <ChevronUp className="w-3.5 h-3.5 ml-auto" /> : <ChevronDown className="w-3.5 h-3.5 ml-auto" />}
                   </button>
-                  <button onClick={() => onDeleteExpense(exp.id)} className="p-2 text-stone-300 hover:text-red-500 hover:bg-red-50 rounded-xl transition-colors active:scale-95">
-                    <Trash2 className="w-4 h-4" />
-                  </button>
+                  
+                  {expandedDetails[exp.id] && (
+                    <div className="mt-2 bg-stone-50 rounded-xl p-3 space-y-1.5 animate-slide-up border border-stone-200/60">
+                      {specificTransactions.length === 0 ? (
+                        <span className="text-xs text-stone-500 font-bold">此筆款項無人需轉帳 (全由墊款人自行負擔)</span>
+                      ) : (
+                        specificTransactions.map((t, idx) => (
+                          <div key={idx} className="flex items-center justify-between text-xs">
+                             <div className="flex items-center gap-1.5">
+                               <span className="font-bold text-stone-700">{t.from}</span>
+                               <span className="text-stone-400 font-medium text-[10px]">應給</span>
+                               <span className="font-bold text-stone-700">{t.to}</span>
+                             </div>
+                             <span className="font-black text-blue-600">${t.amount.toLocaleString()}</span>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  )}
                 </div>
               </div>
             );
@@ -517,7 +659,7 @@ function ExpenseView({ expenses, currentUser, onAddExpense, onDeleteExpense, onT
                 const CatIcon = catInfo.icon;
                 return (
                   <div key={exp.id} className="bg-stone-100 p-3.5 rounded-[1.5rem] border border-stone-200 flex items-center justify-between group">
-                    <div className="flex items-center gap-3 opacity-60">
+                    <div className="flex items-center gap-3 opacity-60 cursor-pointer" onClick={() => handleEditClick(exp)}>
                       <div className="w-10 h-10 rounded-xl bg-stone-200 flex items-center justify-center text-stone-500"><CatIcon className="w-4 h-4" strokeWidth={1.5} /></div>
                       <div>
                         <h4 className="font-bold text-stone-600 text-xs mb-1 line-through">{exp.title}</h4>
@@ -547,7 +689,7 @@ function ExpenseView({ expenses, currentUser, onAddExpense, onDeleteExpense, onT
         <div className="fixed inset-0 bg-stone-900/60 z-[9999] flex items-end justify-center sm:items-center p-4 pb-0 backdrop-blur-sm">
           <div className="bg-white rounded-t-[2rem] sm:rounded-[2rem] p-6 w-full max-w-md max-h-[95vh] overflow-y-auto animate-slide-up shadow-2xl">
             <div className="flex justify-between items-center mb-6 sticky top-0 bg-white z-10 py-2 border-b border-stone-100">
-              <h2 className="text-xl font-black text-stone-800">新增花費</h2>
+              <h2 className="text-xl font-black text-stone-800">{editingId ? '編輯花費' : '新增花費'}</h2>
               <button onClick={() => setShowAddExpense(false)} className="text-stone-400 hover:bg-stone-100 p-2 rounded-full"><span className="font-bold text-sm px-1">✕</span></button>
             </div>
             
@@ -650,7 +792,7 @@ function ExpenseView({ expenses, currentUser, onAddExpense, onDeleteExpense, onT
               </div>
 
               <button onClick={handleSubmit} disabled={!title || !amountTWD || isExtraInvalid} className="w-full py-4 mt-2 bg-stone-900 hover:bg-stone-800 text-white rounded-xl font-bold text-sm disabled:opacity-30 transition-all active:scale-95 flex justify-center items-center shadow-lg">
-                儲存花費
+                {editingId ? '儲存修改' : '新增花費'}
               </button>
             </div>
           </div>
@@ -663,15 +805,15 @@ function ExpenseView({ expenses, currentUser, onAddExpense, onDeleteExpense, onT
             <div className="bg-stone-900 p-6 text-white text-center relative overflow-hidden">
                <div className="absolute -top-10 -right-10 w-32 h-32 bg-white/5 rounded-full blur-2xl"></div>
                <Receipt className="w-8 h-8 mx-auto mb-3 text-stone-300" />
-               <h2 className="text-xl font-black tracking-wide">待轉帳結算單</h2>
-               <p className="text-stone-400 text-xs mt-1 font-medium">系統已自動為您抵銷複雜的代墊款與專屬費用</p>
+               <h2 className="text-xl font-black tracking-wide">總待轉帳結算單</h2>
+               <p className="text-stone-400 text-xs mt-1 font-medium">系統已自動為您抵銷所有的代墊與分攤</p>
             </div>
             <div className="p-6 bg-stone-50">
-               {calculateSettlement().length === 0 ? (
+               {calculateSpecificSettlement(pendingExpenses).length === 0 ? (
                  <div className="text-center text-stone-500 font-bold py-6">無待結算帳款！🎉</div>
                ) : (
                  <div className="space-y-3">
-                   {calculateSettlement().map((t, i) => (
+                   {calculateSpecificSettlement(pendingExpenses).map((t, i) => (
                      <div key={i} className="bg-white p-4 rounded-2xl border border-stone-200 flex items-center justify-between shadow-sm">
                        <div className="flex items-center gap-3">
                           <span className="font-bold text-stone-700">{t.from}</span>
@@ -697,7 +839,6 @@ function ExpenseView({ expenses, currentUser, onAddExpense, onDeleteExpense, onT
 // ==========================================
 function PackingListView({ packingItems, onAddPackingItem, onTogglePackingItem, onDeletePackingItem }) {
   const [newItemName, setNewItemName] = useState('');
-  // 將推薦項目直接寫死，不使用多餘的 useState，避免 Vercel 報錯
   const [recommendedList, setRecommendedList] = useState([
     '⚡ 220V 圓頭轉接頭 (Type C/F)',
     '💳 WOWPASS 或 T-money 交通卡',
