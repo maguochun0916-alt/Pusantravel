@@ -14,7 +14,6 @@ import {
 // ==========================================
 // ☁️ Firebase 雲端資料庫設定區
 // ==========================================
-// ⚠️ 請把你在 Firebase 後台複製的金鑰貼在這邊替換掉：
 const firebaseConfig = {
   apiKey: "AIzaSyBBmyWNbb9qgyT8ylNMTmUctgsBFpNn_Dg",
   authDomain: "pusan-d58e1.firebaseapp.com",
@@ -109,7 +108,10 @@ export default function App() {
         setExpenses(loadedExpenses);
         setIsLoading(false);
       },
-      (err) => console.error("讀取記帳失敗", err)
+      (err) => {
+        console.error("讀取記帳失敗", err);
+        setIsLoading(false);
+      }
     );
 
     const unsubPacking = onSnapshot(
@@ -697,7 +699,6 @@ function ExpenseView({ expenses, currentUser, onAddExpense, onDeleteExpense, onT
 // ==========================================
 function PackingListView({ packingItems, onAddPackingItem, onTogglePackingItem, onDeletePackingItem }) {
   const [newItemName, setNewItemName] = useState('');
-  // 將推薦項目直接寫死，不使用多餘的 useState，避免 Vercel 報錯
   const [recommendedList, setRecommendedList] = useState([
     '⚡ 220V 圓頭轉接頭 (Type C/F)',
     '💳 WOWPASS 或 T-money 交通卡',
