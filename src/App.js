@@ -28,6 +28,7 @@ import {
   ArrowDown,
   Edit3,
   Check,
+  PieChart,
 } from "lucide-react";
 
 // ==========================================
@@ -85,7 +86,7 @@ export default function App() {
 
   const [activeTab, setActiveTab] = useState("expenses");
   const [showCalculator, setShowCalculator] = useState(false);
-
+  
   // Undo 狀態管理
   const [undoNotification, setUndoNotification] = useState(null);
 
@@ -245,13 +246,8 @@ export default function App() {
       {/* 復原提示小精靈 */}
       {undoNotification && (
         <div className="fixed bottom-28 left-1/2 -translate-x-1/2 z-[99999] bg-stone-800/95 backdrop-blur-md text-white px-5 py-3.5 rounded-2xl shadow-2xl flex items-center justify-between gap-4 animate-slide-up w-11/12 max-w-sm border border-stone-700">
-          <span className="flex-1 text-sm font-medium truncate">
-            {undoNotification.msg}
-          </span>
-          <button
-            onClick={executeUndo}
-            className="flex items-center gap-1.5 bg-white/10 hover:bg-white/20 text-white px-4 py-2 rounded-xl text-xs font-bold active:scale-95 transition-all"
-          >
+          <span className="flex-1 text-sm font-medium truncate">{undoNotification.msg}</span>
+          <button onClick={executeUndo} className="flex items-center gap-1.5 bg-white/10 hover:bg-white/20 text-white px-4 py-2 rounded-xl text-xs font-bold active:scale-95 transition-all">
             <Undo2 className="w-4 h-4" /> 復原
           </button>
         </div>
@@ -416,9 +412,11 @@ function QuickCalculatorModal({ onClose }) {
 function ExpenseView({ expenses, setExpenses, currentUser, triggerUndo }) {
   const [showAddExpense, setShowAddExpense] = useState(false);
   const [showSettlement, setShowSettlement] = useState(false);
+  const [showFamilyCostModal, setShowFamilyCostModal] = useState(false); 
   const [showSettledHistory, setShowSettledHistory] = useState(false);
+  const [expandedFamily, setExpandedFamily] = useState(null); // 控制展開哪個家族的分類明細
 
-  // 用來記錄目前正在編輯的 ID (如果是 null 代表是新增)
+  // 用來記錄目前正在編輯的 ID
   const [editingId, setEditingId] = useState(null);
 
   const [title, setTitle] = useState("");
@@ -435,17 +433,13 @@ function ExpenseView({ expenses, setExpenses, currentUser, triggerUndo }) {
 
   const pendingExpenses = expenses.filter((exp) => !exp.isSettled);
   const settledExpenses = expenses.filter((exp) => exp.isSettled);
-  const pendingTotalTWD = pendingExpenses.reduce(
-    (sum, exp) => sum + exp.amountTWD,
-    0
-  );
+  const pendingTotalTWD = pendingExpenses.reduce((sum, exp) => sum + exp.amountTWD, 0);
 
+  // 1. 計算「未結算」的各自負擔額度 (顯示在黑色面板上)
   const personalCosts = useMemo(() => {
     const costs = { 黃子庭: 0, 馬國郡: 0, 邱靖涵: 0, 袁家駿: 0 };
-
     pendingExpenses.forEach((exp) => {
       let mainAmount = exp.amountTWD;
-
       if (exp.extra) {
         mainAmount -= exp.extra.amountTWD;
         const extraTargets = getSplitIndividuals(exp.extra.target, exp.payer);
@@ -454,7 +448,6 @@ function ExpenseView({ expenses, setExpenses, currentUser, triggerUndo }) {
           if (costs[person] !== undefined) costs[person] += extraPerPerson;
         });
       }
-
       const mainTargets = getSplitIndividuals(exp.splitType, exp.payer);
       if (mainTargets.length > 0) {
         const mainPerPerson = mainAmount / mainTargets.length;
@@ -465,6 +458,83 @@ function ExpenseView({ expenses, setExpenses, currentUser, triggerUndo }) {
     });
     return costs;
   }, [pendingExpenses]);
+
+  // 2. ⭐️ 全新功能：計算「所有花費(含已結清)」的分類與明細
+  const familyCategoryDetails = useMemo(() => {
+    const details = { HM: { categories: {} }, CY: { categories: {} } };
+    
+    // 初始化類別
+    CATEGORIES.forEach(c => {
+       details.HM.categories[c.name] = { total: 0, items: [] };
+       details.CY.categories[c.name] = { total: 0, items: [] };
+    });
+
+    expenses.forEach(exp => {
+      let mainAmount = exp.amountTWD;
+      let hmAmount = 0;
+      let cyAmount = 0;
+
+      // 計算專屬費用
+      if (exp.extra) {
+        mainAmount -= exp.extra.amountTWD;
+        const extraTargets = getSplitIndividuals(exp.extra.target, exp.payer);
+        const extraPerPerson = exp.extra.amountTWD / extraTargets.length;
+        extraTargets.forEach(person => {
+          if (['黃子庭', '馬國郡'].includes(person)) hmAmount += extraPerPerson;
+          if (['邱靖涵', '袁家駿'].includes(person)) cyAmount += extraPerPerson;
+        });
+      }
+
+      // 計算主要分攤
+      const mainTargets = getSplitIndividuals(exp.splitType, exp.payer);
+      if (mainTargets.length > 0) {
+        const mainPerPerson = mainAmount / mainTargets.length;
+        mainTargets.forEach(person => {
+          if (['黃子庭', '馬國郡'].includes(person)) hmAmount += mainPerPerson;
+          if (['邱靖涵', '袁家駿'].includes(person)) cyAmount += mainPerPerson;
+        });
+      }
+
+      const cat = exp.category || '飲食';
+      
+      if (hmAmount > 0) {
+         if (!details.HM.categories[cat]) details.HM.categories[cat] = {total: 0, items: []};
+         details.HM.categories[cat].total += hmAmount;
+         details.HM.categories[cat].items.push({ title: exp.title, amount: hmAmount });
+      }
+      if (cyAmount > 0) {
+         if (!details.CY.categories[cat]) details.CY.categories[cat] = {total: 0, items: []};
+         details.CY.categories[cat].total += cyAmount;
+         details.CY.categories[cat].items.push({ title: exp.title, amount: cyAmount });
+      }
+    });
+    return details;
+  }, [expenses]);
+
+  // 為了精算個人總額
+  const allTimePersonalCosts = useMemo(() => {
+    const costs = { 黃子庭: 0, 馬國郡: 0, 邱靖涵: 0, 袁家駿: 0 };
+    expenses.forEach((exp) => {
+      let mainAmount = exp.amountTWD;
+      if (exp.extra) {
+        mainAmount -= exp.extra.amountTWD;
+        const extraTargets = getSplitIndividuals(exp.extra.target, exp.payer);
+        const extraPerPerson = exp.extra.amountTWD / extraTargets.length;
+        extraTargets.forEach(p => { if (costs[p] !== undefined) costs[p] += extraPerPerson; });
+      }
+      const mainTargets = getSplitIndividuals(exp.splitType, exp.payer);
+      if (mainTargets.length > 0) {
+        const mainPerPerson = mainAmount / mainTargets.length;
+        mainTargets.forEach(p => { if (costs[p] !== undefined) costs[p] += mainPerPerson; });
+      }
+    });
+    return costs;
+  }, [expenses]);
+
+  const hmFamilyTotal = allTimePersonalCosts["黃子庭"] + allTimePersonalCosts["馬國郡"];
+  const cyFamilyTotal = allTimePersonalCosts["邱靖涵"] + allTimePersonalCosts["袁家駿"];
+  const isHM = ["黃子庭", "馬國郡"].includes(currentUser);
+  const isCY = ["邱靖涵", "袁家駿"].includes(currentUser);
 
   const calculateSettlement = () => {
     const balances = { 黃子庭: 0, 馬國郡: 0, 邱靖涵: 0, 袁家駿: 0 };
@@ -477,44 +547,31 @@ function ExpenseView({ expenses, setExpenses, currentUser, triggerUndo }) {
         mainAmount -= exp.extra.amountTWD;
         const extraTargets = getSplitIndividuals(exp.extra.target, exp.payer);
         const extraPerPerson = exp.extra.amountTWD / extraTargets.length;
-        extraTargets.forEach((person) => {
-          balances[person] -= extraPerPerson;
-        });
+        extraTargets.forEach((person) => { balances[person] -= extraPerPerson; });
       }
 
       const mainTargets = getSplitIndividuals(exp.splitType, exp.payer);
       if (mainTargets.length > 0) {
         const mainPerPerson = mainAmount / mainTargets.length;
-        mainTargets.forEach((person) => {
-          balances[person] -= mainPerPerson;
-        });
+        mainTargets.forEach((person) => { balances[person] -= mainPerPerson; });
       }
     });
 
     let debtors = [];
     let creditors = [];
     for (let person in balances) {
-      if (balances[person] < -0.1)
-        debtors.push({ name: person, amount: Math.abs(balances[person]) });
-      else if (balances[person] > 0.1)
-        creditors.push({ name: person, amount: balances[person] });
+      if (balances[person] < -0.1) debtors.push({ name: person, amount: Math.abs(balances[person]) });
+      else if (balances[person] > 0.1) creditors.push({ name: person, amount: balances[person] });
     }
     debtors.sort((a, b) => b.amount - a.amount);
     creditors.sort((a, b) => b.amount - a.amount);
 
     const transactions = [];
-    let i = 0;
-    let j = 0;
+    let i = 0, j = 0;
     while (i < debtors.length && j < creditors.length) {
       let amount = Math.min(debtors[i].amount, creditors[j].amount);
-      if (amount > 0)
-        transactions.push({
-          from: debtors[i].name,
-          to: creditors[j].name,
-          amount: Math.round(amount),
-        });
-      debtors[i].amount -= amount;
-      creditors[j].amount -= amount;
+      if (amount > 0) transactions.push({ from: debtors[i].name, to: creditors[j].name, amount: Math.round(amount) });
+      debtors[i].amount -= amount; creditors[j].amount -= amount;
       if (debtors[i].amount < 0.1) i++;
       if (creditors[j].amount < 0.1) j++;
     }
@@ -522,126 +579,51 @@ function ExpenseView({ expenses, setExpenses, currentUser, triggerUndo }) {
   };
 
   const handleTWDChange = (e) => {
-    const val = e.target.value;
-    setAmountTWD(val);
-    if (val)
-      setAmountKRW(
-        Math.round(parseFloat(val) * EXCHANGE_RATE_TWD_TO_KRW).toString()
-      );
-    else setAmountKRW("");
+    const val = e.target.value; setAmountTWD(val);
+    if (val) setAmountKRW(Math.round(parseFloat(val) * EXCHANGE_RATE_TWD_TO_KRW).toString()); else setAmountKRW("");
   };
   const handleKRWChange = (e) => {
-    const val = e.target.value;
-    setAmountKRW(val);
-    if (val)
-      setAmountTWD(
-        Math.round(parseFloat(val) / EXCHANGE_RATE_TWD_TO_KRW).toString()
-      );
-    else setAmountTWD("");
+    const val = e.target.value; setAmountKRW(val);
+    if (val) setAmountTWD(Math.round(parseFloat(val) / EXCHANGE_RATE_TWD_TO_KRW).toString()); else setAmountTWD("");
   };
   const handleExtraTWDChange = (e) => {
-    const val = e.target.value;
-    setExtraAmountTWD(val);
-    if (val)
-      setExtraAmountKRW(
-        Math.round(parseFloat(val) * EXCHANGE_RATE_TWD_TO_KRW).toString()
-      );
-    else setExtraAmountKRW("");
+    const val = e.target.value; setExtraAmountTWD(val);
+    if (val) setExtraAmountKRW(Math.round(parseFloat(val) * EXCHANGE_RATE_TWD_TO_KRW).toString()); else setExtraAmountKRW("");
   };
   const handleExtraKRWChange = (e) => {
-    const val = e.target.value;
-    setExtraAmountKRW(val);
-    if (val)
-      setExtraAmountTWD(
-        Math.round(parseFloat(val) / EXCHANGE_RATE_TWD_TO_KRW).toString()
-      );
-    else setExtraAmountTWD("");
+    const val = e.target.value; setExtraAmountKRW(val);
+    if (val) setExtraAmountTWD(Math.round(parseFloat(val) / EXCHANGE_RATE_TWD_TO_KRW).toString()); else setExtraAmountTWD("");
   };
 
-  const isExtraInvalid =
-    hasExtra &&
-    extraAmountTWD &&
-    amountTWD &&
-    parseFloat(extraAmountTWD) >= parseFloat(amountTWD);
+  const isExtraInvalid = hasExtra && extraAmountTWD && amountTWD && parseFloat(extraAmountTWD) >= parseFloat(amountTWD);
 
-  // 點擊新增按鈕：清空表單
   const handleAddClick = () => {
-    setEditingId(null);
-    setTitle("");
-    setAmountTWD("");
-    setAmountKRW("");
-    setSplitType("大家共同");
-    setPayer(currentUser);
-    setHasExtra(false);
-    setExtraTarget("邱袁共同");
-    setExtraAmountKRW("");
-    setExtraAmountTWD("");
-    setShowAddExpense(true);
+    setEditingId(null); setTitle(""); setAmountTWD(""); setAmountKRW(""); setSplitType("大家共同"); setPayer(currentUser); setHasExtra(false); setExtraTarget("邱袁共同"); setExtraAmountKRW(""); setExtraAmountTWD(""); setShowAddExpense(true);
   };
 
-  // 點擊編輯按鈕：載入資料到表單
   const handleEditClick = (exp) => {
-    setEditingId(exp.id);
-    setTitle(exp.title);
-    setCategory(exp.category);
-    setAmountTWD(exp.amountTWD.toString());
-    setAmountKRW(exp.amountKRW.toString());
-    setPayer(exp.payer);
-    setSplitType(exp.splitType);
-    if (exp.extra) {
-      setHasExtra(true);
-      setExtraTarget(exp.extra.target);
-      setExtraAmountTWD(exp.extra.amountTWD.toString());
-      setExtraAmountKRW(exp.extra.amountKRW.toString());
-    } else {
-      setHasExtra(false);
-      setExtraAmountTWD("");
-      setExtraAmountKRW("");
-    }
+    setEditingId(exp.id); setTitle(exp.title); setCategory(exp.category); setAmountTWD(exp.amountTWD.toString()); setAmountKRW(exp.amountKRW.toString()); setPayer(exp.payer); setSplitType(exp.splitType);
+    if (exp.extra) { setHasExtra(true); setExtraTarget(exp.extra.target); setExtraAmountTWD(exp.extra.amountTWD.toString()); setExtraAmountKRW(exp.extra.amountKRW.toString()); } 
+    else { setHasExtra(false); setExtraAmountTWD(""); setExtraAmountKRW(""); }
     setShowAddExpense(true);
   };
 
-  // 儲存修改或新增
   const handleSubmitExpense = () => {
     if (!title || (!amountTWD && !amountKRW) || isExtraInvalid) return;
-
-    const oldExpenses = [...expenses]; // 備份舊資料給 Undo 使用
-
+    const oldExpenses = [...expenses];
     let extraData = null;
     if (hasExtra && extraAmountTWD && parseFloat(extraAmountTWD) > 0) {
-      extraData = {
-        target: extraTarget,
-        amountTWD: parseFloat(extraAmountTWD),
-        amountKRW: parseFloat(extraAmountKRW),
-      };
+      extraData = { target: extraTarget, amountTWD: parseFloat(extraAmountTWD), amountKRW: parseFloat(extraAmountKRW) };
     }
-
-    const expenseData = {
-      payer,
-      title,
-      category,
-      amountTWD: parseFloat(amountTWD || 0),
-      amountKRW: parseFloat(amountKRW || 0),
-      splitType,
-      extra: extraData,
-      date: new Date().toISOString(),
-    };
+    const expenseData = { payer, title, category, amountTWD: parseFloat(amountTWD || 0), amountKRW: parseFloat(amountKRW || 0), splitType, extra: extraData, date: new Date().toISOString() };
 
     if (editingId) {
-      // 這是修改
-      setExpenses((prev) =>
-        prev.map((e) => (e.id === editingId ? { ...e, ...expenseData } : e))
-      );
+      setExpenses((prev) => prev.map((e) => (e.id === editingId ? { ...e, ...expenseData } : e)));
       triggerUndo(`已修改「${title}」`, () => setExpenses(oldExpenses));
     } else {
-      // 這是新增
-      setExpenses([
-        { id: Date.now(), ...expenseData, isSettled: false },
-        ...expenses,
-      ]);
+      setExpenses([{ id: Date.now(), ...expenseData, isSettled: false }, ...expenses]);
       triggerUndo(`已新增「${title}」`, () => setExpenses(oldExpenses));
     }
-
     setShowAddExpense(false);
   };
 
@@ -649,25 +631,14 @@ function ExpenseView({ expenses, setExpenses, currentUser, triggerUndo }) {
     const expToDelete = expenses.find((e) => e.id === id);
     const oldExpenses = [...expenses];
     setExpenses((prev) => prev.filter((e) => e.id !== id));
-    triggerUndo(`已刪除「${expToDelete.title}」`, () =>
-      setExpenses(oldExpenses)
-    );
+    triggerUndo(`已刪除「${expToDelete.title}」`, () => setExpenses(oldExpenses));
   };
 
   const toggleSettleStatus = (id) => {
     const expToToggle = expenses.find((e) => e.id === id);
     const oldExpenses = [...expenses];
-    setExpenses((prev) =>
-      prev.map((exp) =>
-        exp.id === id ? { ...exp, isSettled: !exp.isSettled } : exp
-      )
-    );
-    triggerUndo(
-      expToToggle.isSettled
-        ? `已取消結清「${expToToggle.title}」`
-        : `已結清「${expToToggle.title}」`,
-      () => setExpenses(oldExpenses)
-    );
+    setExpenses((prev) => prev.map((exp) => exp.id === id ? { ...exp, isSettled: !exp.isSettled } : exp ));
+    triggerUndo( expToToggle.isSettled ? `已取消結清「${expToToggle.title}」` : `已結清「${expToToggle.title}」`, () => setExpenses(oldExpenses) );
   };
 
   return (
@@ -686,12 +657,20 @@ function ExpenseView({ expenses, setExpenses, currentUser, triggerUndo }) {
               {pendingTotalTWD.toLocaleString()}
             </h2>
           </div>
-          <button
-            onClick={() => setShowSettlement(true)}
-            className="bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold px-4 py-2.5 rounded-xl shadow-lg shadow-blue-900/50 transition-all flex items-center gap-1.5 active:scale-95"
-          >
-            <Receipt className="w-4 h-4" /> 產生結算表
-          </button>
+          <div className="flex flex-col gap-2">
+            <button
+              onClick={() => setShowSettlement(true)}
+              className="bg-stone-700 hover:bg-stone-600 text-white text-xs font-bold px-4 py-2.5 rounded-xl shadow-lg transition-all flex items-center gap-1.5 active:scale-95"
+            >
+              <Receipt className="w-4 h-4" /> 產生結算表
+            </button>
+            <button
+              onClick={() => setShowFamilyCostModal(true)}
+              className="bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold px-4 py-2.5 rounded-xl shadow-lg shadow-blue-900/50 transition-all flex items-center gap-1.5 active:scale-95"
+            >
+              <PieChart className="w-4 h-4" /> 家族與個人開銷
+            </button>
+          </div>
         </div>
 
         {/* 各自花費儀表板 */}
@@ -741,35 +720,25 @@ function ExpenseView({ expenses, setExpenses, currentUser, triggerUndo }) {
           </div>
         ) : (
           pendingExpenses.map((exp) => {
-            const catInfo =
-              CATEGORIES.find((c) => c.name === exp.category) || CATEGORIES[0];
+            const catInfo = CATEGORIES.find((c) => c.name === exp.category) || CATEGORIES[0];
             const CatIcon = catInfo.icon;
             let badgeColor = "bg-stone-100 text-stone-500";
-            if (exp.splitType === "黃馬共同")
-              badgeColor = "bg-blue-50 text-blue-600 border border-blue-100";
-            if (exp.splitType === "邱袁共同")
-              badgeColor = "bg-amber-50 text-amber-600 border border-amber-100";
-            if (exp.splitType === "大家共同")
-              badgeColor = "bg-stone-800 text-white";
+            if (exp.splitType === "黃馬共同") badgeColor = "bg-blue-50 text-blue-600 border border-blue-100";
+            if (exp.splitType === "邱袁共同") badgeColor = "bg-amber-50 text-amber-600 border border-amber-100";
+            if (exp.splitType === "大家共同") badgeColor = "bg-stone-800 text-white";
 
             return (
               <div
                 key={exp.id}
                 className="bg-white p-4 rounded-[1.5rem] shadow-sm border border-stone-200 flex items-center justify-between group transition-all relative overflow-hidden"
               >
-                <div
+                <div 
                   className="flex items-center gap-3 relative z-10 w-full overflow-hidden cursor-pointer hover:opacity-80 active:opacity-60 transition-opacity"
                   onClick={() => handleEditClick(exp)}
                 >
                   <div className="w-11 h-11 rounded-[14px] bg-stone-50 flex items-center justify-center border border-stone-100 flex-shrink-0 text-stone-600 relative">
-                    <CatIcon
-                      className="w-5 h-5 group-hover:opacity-0 transition-opacity"
-                      strokeWidth={1.5}
-                    />
-                    <Edit3
-                      className="w-5 h-5 absolute text-blue-500 opacity-0 group-hover:opacity-100 transition-opacity"
-                      strokeWidth={2}
-                    />
+                    <CatIcon className="w-5 h-5 group-hover:opacity-0 transition-opacity" strokeWidth={1.5} />
+                    <Edit3 className="w-5 h-5 absolute text-blue-500 opacity-0 group-hover:opacity-100 transition-opacity" strokeWidth={2}/>
                   </div>
                   <div className="overflow-hidden w-full">
                     <h4 className="font-bold text-stone-800 text-sm mb-1 truncate pr-2">
@@ -839,28 +808,20 @@ function ExpenseView({ expenses, setExpenses, currentUser, triggerUndo }) {
           {showSettledHistory && (
             <div className="space-y-3 mt-4 animate-in slide-in-from-top-4 opacity-70 hover:opacity-100 transition-opacity">
               {settledExpenses.map((exp) => {
-                const catInfo =
-                  CATEGORIES.find((c) => c.name === exp.category) ||
-                  CATEGORIES[0];
+                const catInfo = CATEGORIES.find((c) => c.name === exp.category) || CATEGORIES[0];
                 const CatIcon = catInfo.icon;
                 return (
                   <div
                     key={exp.id}
                     className="bg-stone-100 p-3.5 rounded-[1.5rem] border border-stone-200 flex items-center justify-between group cursor-pointer hover:bg-stone-200"
                   >
-                    <div
+                    <div 
                       className="flex items-center gap-3 opacity-60 flex-1"
                       onClick={() => handleEditClick(exp)}
                     >
                       <div className="w-10 h-10 rounded-xl bg-stone-200 flex items-center justify-center text-stone-500 relative">
-                        <CatIcon
-                          className="w-4 h-4 group-hover:opacity-0 transition-opacity"
-                          strokeWidth={1.5}
-                        />
-                        <Edit3
-                          className="w-4 h-4 absolute text-blue-500 opacity-0 group-hover:opacity-100 transition-opacity"
-                          strokeWidth={2}
-                        />
+                        <CatIcon className="w-4 h-4 group-hover:opacity-0 transition-opacity" strokeWidth={1.5} />
+                        <Edit3 className="w-4 h-4 absolute text-blue-500 opacity-0 group-hover:opacity-100 transition-opacity" strokeWidth={2}/>
                       </div>
                       <div className="flex-1">
                         <h4 className="font-bold text-stone-600 text-xs mb-1 line-through">
@@ -902,14 +863,151 @@ function ExpenseView({ expenses, setExpenses, currentUser, triggerUndo }) {
         </div>
       )}
 
+      {/* ⭐️ 全新：家族與個人開銷 (含分類明細) Modal */}
+      {showFamilyCostModal && (
+        <div
+          className="fixed inset-0 bg-stone-900/60 z-[9999] flex items-center justify-center p-4 backdrop-blur-md"
+          onClick={() => setShowFamilyCostModal(false)}
+        >
+          <div
+            className="bg-white rounded-[2rem] w-full max-w-sm max-h-[90vh] overflow-y-auto animate-slide-up shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="bg-stone-900 p-6 text-white text-center relative overflow-hidden">
+              <div className="absolute -top-10 -right-10 w-32 h-32 bg-white/5 rounded-full blur-2xl"></div>
+              <PieChart className="w-8 h-8 mx-auto mb-3 text-stone-300" />
+              <h2 className="text-xl font-black tracking-wide">家族與個人總開銷</h2>
+              <p className="text-stone-400 text-xs mt-1 font-medium">
+                查看各自家族需負擔的所有花費 (含已結清)
+              </p>
+            </div>
+            
+            <div className="p-6 bg-stone-50 space-y-5">
+              {/* === 黃馬家區塊 === */}
+              <div className={`p-4 rounded-2xl border transition-all ${isHM ? 'bg-blue-50 border-blue-200 shadow-md ring-2 ring-blue-500/20' : 'bg-white border-stone-200'}`}>
+                <h3 className={`font-black text-lg mb-2 flex items-center justify-between ${isHM ? 'text-blue-900' : 'text-stone-700'}`}>
+                  <span>黃馬家 <span className="text-[10px] font-bold text-stone-400 ml-1">子庭&國郡</span></span>
+                  <span className="text-xl">${hmFamilyTotal.toLocaleString()}</span>
+                </h3>
+                {isHM && <span className="inline-block text-[10px] bg-blue-600 text-white px-2 py-0.5 rounded-md mb-3 font-bold">這是你的家族專區</span>}
+                <div className="space-y-1.5 mt-2 pt-3 border-t border-stone-200/60">
+                  <div className="flex justify-between text-xs font-bold text-stone-500">
+                    <span>黃子庭 個人負擔</span>
+                    <span className="text-stone-700">${Math.round(allTimePersonalCosts['黃子庭']).toLocaleString()}</span>
+                  </div>
+                  <div className="flex justify-between text-xs font-bold text-stone-500">
+                    <span>馬國郡 個人負擔</span>
+                    <span className="text-stone-700">${Math.round(allTimePersonalCosts['馬國郡']).toLocaleString()}</span>
+                  </div>
+                </div>
+
+                <button 
+                  onClick={() => setExpandedFamily(expandedFamily === 'HM' ? null : 'HM')} 
+                  className={`w-full mt-4 py-2.5 bg-white rounded-xl border text-xs font-bold flex items-center justify-center gap-1.5 transition-colors active:scale-95 ${expandedFamily === 'HM' ? 'border-stone-300 text-stone-500' : 'border-blue-200 text-blue-600 hover:bg-blue-100'}`}
+                >
+                   <PieChart className="w-3.5 h-3.5" /> 
+                   {expandedFamily === 'HM' ? '收起分類明細' : '展開分類明細'}
+                   {expandedFamily === 'HM' ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                </button>
+
+                {expandedFamily === 'HM' && (
+                  <div className="mt-3 pt-3 border-t border-stone-200 space-y-3 animate-slide-up">
+                    {CATEGORIES.map(c => {
+                       const data = familyCategoryDetails.HM.categories[c.name];
+                       if (!data || data.total === 0) return null;
+                       const Icon = c.icon;
+                       return (
+                         <div key={c.name} className="bg-white rounded-xl p-3 border border-stone-100 shadow-sm">
+                           <h4 className="flex items-center justify-between text-xs font-black text-stone-700 mb-2 pb-2 border-b border-stone-100">
+                             <span className="flex items-center gap-1.5"><Icon className="w-4 h-4 text-blue-500" /> {c.name}</span>
+                             <span className="text-blue-700">${Math.round(data.total).toLocaleString()}</span>
+                           </h4>
+                           <div className="space-y-1.5">
+                             {data.items.map((item, idx) => (
+                               <div key={idx} className="flex justify-between items-center text-[11px] text-stone-500">
+                                 <span className="truncate pr-2 font-medium flex-1">• {item.title}</span>
+                                 <span className="font-bold text-stone-400 flex-shrink-0">${Math.round(item.amount).toLocaleString()}</span>
+                               </div>
+                             ))}
+                           </div>
+                         </div>
+                       )
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {/* === 邱袁家區塊 === */}
+              <div className={`p-4 rounded-2xl border transition-all ${isCY ? 'bg-amber-50 border-amber-200 shadow-md ring-2 ring-amber-500/20' : 'bg-white border-stone-200'}`}>
+                <h3 className={`font-black text-lg mb-2 flex items-center justify-between ${isCY ? 'text-amber-900' : 'text-stone-700'}`}>
+                  <span>邱袁家 <span className="text-[10px] font-bold text-stone-400 ml-1">含樂樂</span></span>
+                  <span className="text-xl">${cyFamilyTotal.toLocaleString()}</span>
+                </h3>
+                {isCY && <span className="inline-block text-[10px] bg-amber-500 text-white px-2 py-0.5 rounded-md mb-3 font-bold">這是你的家族專區</span>}
+                <div className="space-y-1.5 mt-2 pt-3 border-t border-stone-200/60">
+                  <div className="flex justify-between text-xs font-bold text-stone-500">
+                    <span>邱靖涵 個人負擔</span>
+                    <span className="text-stone-700">${Math.round(allTimePersonalCosts['邱靖涵']).toLocaleString()}</span>
+                  </div>
+                  <div className="flex justify-between text-xs font-bold text-stone-500">
+                    <span>袁家駿 個人負擔</span>
+                    <span className="text-stone-700">${Math.round(allTimePersonalCosts['袁家駿']).toLocaleString()}</span>
+                  </div>
+                </div>
+
+                <button 
+                  onClick={() => setExpandedFamily(expandedFamily === 'CY' ? null : 'CY')} 
+                  className={`w-full mt-4 py-2.5 bg-white rounded-xl border text-xs font-bold flex items-center justify-center gap-1.5 transition-colors active:scale-95 ${expandedFamily === 'CY' ? 'border-stone-300 text-stone-500' : 'border-amber-200 text-amber-600 hover:bg-amber-100'}`}
+                >
+                   <PieChart className="w-3.5 h-3.5" /> 
+                   {expandedFamily === 'CY' ? '收起分類明細' : '展開分類明細'}
+                   {expandedFamily === 'CY' ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                </button>
+
+                {expandedFamily === 'CY' && (
+                  <div className="mt-3 pt-3 border-t border-stone-200 space-y-3 animate-slide-up">
+                    {CATEGORIES.map(c => {
+                       const data = familyCategoryDetails.CY.categories[c.name];
+                       if (!data || data.total === 0) return null;
+                       const Icon = c.icon;
+                       return (
+                         <div key={c.name} className="bg-white rounded-xl p-3 border border-stone-100 shadow-sm">
+                           <h4 className="flex items-center justify-between text-xs font-black text-stone-700 mb-2 pb-2 border-b border-stone-100">
+                             <span className="flex items-center gap-1.5"><Icon className="w-4 h-4 text-amber-500" /> {c.name}</span>
+                             <span className="text-amber-700">${Math.round(data.total).toLocaleString()}</span>
+                           </h4>
+                           <div className="space-y-1.5">
+                             {data.items.map((item, idx) => (
+                               <div key={idx} className="flex justify-between items-center text-[11px] text-stone-500">
+                                 <span className="truncate pr-2 font-medium flex-1">• {item.title}</span>
+                                 <span className="font-bold text-stone-400 flex-shrink-0">${Math.round(item.amount).toLocaleString()}</span>
+                               </div>
+                             ))}
+                           </div>
+                         </div>
+                       )
+                    })}
+                  </div>
+                )}
+              </div>
+
+              <button
+                onClick={() => setShowFamilyCostModal(false)}
+                className="w-full mt-4 py-3.5 bg-stone-200 text-stone-800 rounded-xl font-bold hover:bg-stone-300 transition-colors active:scale-95 sticky bottom-0"
+              >
+                關閉
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* 新增/編輯記帳 Modal */}
       {showAddExpense && (
         <div className="fixed inset-0 bg-stone-900/60 z-[9999] flex items-end justify-center sm:items-center p-4 pb-0 backdrop-blur-sm">
           <div className="bg-white rounded-t-[2rem] sm:rounded-[2rem] p-6 w-full max-w-md max-h-[95vh] overflow-y-auto animate-slide-up shadow-2xl">
             <div className="flex justify-between items-center mb-6 sticky top-0 bg-white z-10 py-2 border-b border-stone-100">
-              <h2 className="text-xl font-black text-stone-800">
-                {editingId ? "修改花費" : "新增花費"}
-              </h2>
+              <h2 className="text-xl font-black text-stone-800">{editingId ? '修改花費' : '新增花費'}</h2>
               <button
                 onClick={() => setShowAddExpense(false)}
                 className="text-stone-400 hover:bg-stone-100 p-2 rounded-full"
@@ -1155,7 +1253,7 @@ function ExpenseView({ expenses, setExpenses, currentUser, triggerUndo }) {
                 disabled={!title || !amountTWD || isExtraInvalid}
                 className="w-full py-4 mt-2 bg-stone-900 hover:bg-stone-800 text-white rounded-xl font-bold text-sm disabled:opacity-30 transition-all active:scale-95 flex justify-center items-center shadow-lg"
               >
-                {editingId ? "儲存修改" : "新增花費"}
+                {editingId ? '儲存修改' : '新增花費'}
               </button>
             </div>
           </div>
@@ -1255,12 +1353,10 @@ function PackingListView({
   };
 
   const deleteItem = (id) => {
-    const itemToDelete = packingItems.find((i) => i.id === id);
+    const itemToDelete = packingItems.find(i => i.id === id);
     const oldItems = [...packingItems];
     setPackingItems((prev) => prev.filter((item) => item.id !== id));
-    triggerUndo(`已刪除「${itemToDelete.name}」`, () =>
-      setPackingItems(oldItems)
-    );
+    triggerUndo(`已刪除「${itemToDelete.name}」`, () => setPackingItems(oldItems));
   };
 
   const handleAddCustom = () => {
@@ -1282,13 +1378,13 @@ function PackingListView({
   const handleAddRecommended = (itemStr) => {
     const oldItems = [...packingItems];
     const oldRecommended = [...recommendedItems];
-
+    
     setPackingItems([
       ...packingItems,
       { id: Date.now(), name: itemStr, checkedHM: false, checkedCY: false },
     ]);
     setRecommendedItems((prev) => prev.filter((i) => i !== itemStr));
-
+    
     triggerUndo(`已新增推薦項目`, () => {
       setPackingItems(oldItems);
       setRecommendedItems(oldRecommended);
@@ -1302,11 +1398,7 @@ function PackingListView({
       return;
     }
     const oldItems = [...packingItems];
-    setPackingItems((prev) =>
-      prev.map((item) =>
-        item.id === id ? { ...item, name: editName.trim() } : item
-      )
-    );
+    setPackingItems(prev => prev.map(item => item.id === id ? { ...item, name: editName.trim() } : item));
     setEditingId(null);
     triggerUndo(`已修改行李項目`, () => setPackingItems(oldItems));
   };
@@ -1357,17 +1449,14 @@ function PackingListView({
               <div className="flex items-center gap-2 flex-1 pl-1">
                 {editingId === item.id ? (
                   <div className="flex w-full items-center gap-2 pr-2">
-                    <input
+                    <input 
                       autoFocus
                       type="text"
                       value={editName}
                       onChange={(e) => setEditName(e.target.value)}
                       className="flex-1 border-b-2 border-stone-800 focus:outline-none text-sm font-bold text-stone-800 py-1"
                     />
-                    <button
-                      onClick={() => handleSaveEdit(item.id)}
-                      className="p-1.5 bg-stone-800 text-white rounded-lg"
-                    >
+                    <button onClick={() => handleSaveEdit(item.id)} className="p-1.5 bg-stone-800 text-white rounded-lg">
                       <Check className="w-3.5 h-3.5" />
                     </button>
                   </div>
@@ -1379,12 +1468,11 @@ function PackingListView({
                     }}
                     className="font-bold text-sm text-stone-800 cursor-text hover:text-blue-600 transition-colors flex items-center gap-2"
                   >
-                    {item.name}{" "}
-                    <Edit3 className="w-3 h-3 text-stone-300 opacity-0 group-hover:opacity-100" />
+                    {item.name} <Edit3 className="w-3 h-3 text-stone-300 opacity-0 group-hover:opacity-100" />
                   </span>
                 )}
               </div>
-
+              
               <div className="flex items-center gap-2 justify-end">
                 <button
                   onClick={() => toggleHM(item.id)}
