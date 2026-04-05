@@ -9,7 +9,8 @@
     "react-dom": "^19.0.0",
     "react-scripts": "^5.0.0",
     "lucide-react": "0.576.0",
-    "tailwindcss": "4.2.1"
+    "tailwindcss": "4.2.1",
+    "firebase": "latest"
   },
   "devDependencies": {
     "@types/react": "19.0.0",

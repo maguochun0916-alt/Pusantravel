@@ -1,4 +1,14 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useEffect, useMemo } from "react";
+import { initializeApp } from "firebase/app";
+import { getAuth, signInAnonymously, onAuthStateChanged } from "firebase/auth";
+import {
+  getFirestore,
+  collection,
+  doc,
+  setDoc,
+  deleteDoc,
+  onSnapshot,
+} from "firebase/firestore";
 import {
   Wallet,
   User,
@@ -30,6 +40,23 @@ import {
   Check,
   PieChart,
 } from "lucide-react";
+
+// ==========================================
+// ☁️ Firebase 雲端資料庫設定區
+// ==========================================
+const firebaseConfig = {
+  apiKey: "AIzaSyBBmyWNbb9qgyT8ylNMTmUctgsBFpNn_Dg",
+  authDomain: "pusan-d58e1.firebaseapp.com",
+  projectId: "pusan-d58e1",
+  storageBucket: "pusan-d58e1.firebasestorage.app",
+  messagingSenderId: "76540176833",
+  appId: "1:76540176833:web:b6e11a24dd17cf2c096740",
+};
+
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const PROJECT_ID = "busan-trip-app";
 
 // ==========================================
 // 🚀 常數設定與資料區
@@ -78,81 +105,72 @@ const getSplitIndividuals = (type, payerName, personalTarget) => {
 // ==========================================
 export default function App() {
   const [currentUser, setCurrentUser] = useState(() => {
-    if (typeof window !== "undefined") {
+    if (typeof window !== "undefined")
       return localStorage.getItem("busan_trip_user") || null;
-    }
     return null;
   });
 
   const [activeTab, setActiveTab] = useState("expenses");
   const [showCalculator, setShowCalculator] = useState(false);
-
-  // Undo 狀態管理
   const [undoNotification, setUndoNotification] = useState(null);
 
-  const [expenses, setExpenses] = useState([
-    {
-      id: 1,
-      payer: "黃子庭",
-      title: "四人來回機票 (行前)",
-      category: "機票",
-      amountTWD: 34000,
-      amountKRW: 1445000,
-      splitType: "大家共同",
-      personalTarget: null,
-      extra: null,
-      date: new Date().toISOString(),
-      isSettled: false,
-    },
-    {
-      id: 2,
-      payer: "馬國郡",
-      title: "西面味贊王烤肉",
-      category: "飲食",
-      amountTWD: 2200,
-      amountKRW: 93500,
-      splitType: "大家共同",
-      personalTarget: null,
-      extra: null,
-      date: new Date().toISOString(),
-      isSettled: false,
-    },
-    {
-      id: 3,
-      payer: "邱靖涵",
-      title: "海雲台海鮮餐廳 (含樂樂)",
-      category: "飲食",
-      amountTWD: 20000,
-      amountKRW: 850000,
-      splitType: "大家共同",
-      personalTarget: null,
-      extra: { target: "邱袁共同", amountTWD: 2000, amountKRW: 85000 },
-      date: new Date().toISOString(),
-      isSettled: false,
-    },
-  ]);
-
-  const [packingItems, setPackingItems] = useState([
-    {
-      id: 1,
-      name: "護照 (檢查效期需滿6個月)",
-      checkedHM: true,
-      checkedCY: false,
-    },
-    {
-      id: 2,
-      name: "信用卡 (海外回饋高優先)",
-      checkedHM: false,
-      checkedCY: false,
-    },
-  ]);
-
+  // 雲端資料狀態
+  const [authUser, setAuthUser] = useState(null);
+  const [expenses, setExpenses] = useState([]);
+  const [packingItems, setPackingItems] = useState([]);
   const [recommendedItems, setRecommendedItems] = useState([
     "⚡ 220V 圓頭轉接頭 (Type C/F)",
     "💳 T-money 或 WOWPASS 交通卡",
     "🛂 護照紙本影本 (備用)",
     "🧥 防風保暖外套 (海風大)",
   ]);
+
+  // 初始化 Firebase 登入與即時監聽
+  useEffect(() => {
+    const initAuth = async () => {
+      try {
+        await signInAnonymously(auth);
+      } catch (error) {
+        console.error("驗證失敗:", error);
+      }
+    };
+    initAuth();
+    const unsubscribe = onAuthStateChanged(auth, setAuthUser);
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (!authUser) return;
+
+    const unsubExpenses = onSnapshot(
+      collection(db, "artifacts", PROJECT_ID, "expenses"),
+      (snapshot) => {
+        const loadedExpenses = snapshot.docs.map((d) => ({
+          id: d.id,
+          ...d.data(),
+        }));
+        loadedExpenses.sort((a, b) => new Date(b.date) - new Date(a.date));
+        setExpenses(loadedExpenses);
+      }
+    );
+
+    const unsubPacking = onSnapshot(
+      collection(db, "artifacts", PROJECT_ID, "packingItems"),
+      (snapshot) => {
+        const loadedItems = snapshot.docs.map((d) => ({
+          id: d.id,
+          ...d.data(),
+        }));
+        loadedItems.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+        setPackingItems(loadedItems);
+      }
+    );
+
+    return () => {
+      unsubExpenses();
+      unsubPacking();
+    };
+  }, [authUser]);
 
   const handleLogin = (name) => {
     setCurrentUser(name);
@@ -167,9 +185,10 @@ export default function App() {
   const triggerUndo = (msg, rollbackFn) => {
     const id = Date.now();
     setUndoNotification({ id, msg, rollback: rollbackFn });
-    setTimeout(() => {
-      setUndoNotification((curr) => (curr?.id === id ? null : curr));
-    }, 5000);
+    setTimeout(
+      () => setUndoNotification((curr) => (curr?.id === id ? null : curr)),
+      5000
+    );
   };
 
   const executeUndo = () => {
@@ -179,11 +198,88 @@ export default function App() {
     }
   };
 
+  // --- 雲端操作函式 (記帳) ---
+  const addExpense = async (data) => {
+    const docId = Date.now().toString();
+    await setDoc(doc(db, "artifacts", PROJECT_ID, "expenses", docId), {
+      ...data,
+      id: docId,
+    });
+    triggerUndo(`已新增「${data.title}」`, () =>
+      deleteDoc(doc(db, "artifacts", PROJECT_ID, "expenses", docId))
+    );
+  };
+  const updateExpense = async (id, newData) => {
+    const oldData = expenses.find((e) => e.id === id);
+    await setDoc(doc(db, "artifacts", PROJECT_ID, "expenses", id.toString()), {
+      ...newData,
+      id: id.toString(),
+    });
+    triggerUndo(`已修改「${newData.title}」`, () =>
+      setDoc(
+        doc(db, "artifacts", PROJECT_ID, "expenses", id.toString()),
+        oldData
+      )
+    );
+  };
+  const deleteExpense = async (id) => {
+    const oldData = expenses.find((e) => e.id === id);
+    await deleteDoc(
+      doc(db, "artifacts", PROJECT_ID, "expenses", id.toString())
+    );
+    triggerUndo(`已刪除「${oldData.title}」`, () =>
+      setDoc(
+        doc(db, "artifacts", PROJECT_ID, "expenses", id.toString()),
+        oldData
+      )
+    );
+  };
+  const toggleSettleStatus = async (id) => {
+    const oldData = expenses.find((e) => e.id === id);
+    const newData = { ...oldData, isSettled: !oldData.isSettled };
+    await setDoc(
+      doc(db, "artifacts", PROJECT_ID, "expenses", id.toString()),
+      newData
+    );
+    triggerUndo(
+      newData.isSettled
+        ? `已結清「${newData.title}」`
+        : `已取消結清「${newData.title}」`,
+      () =>
+        setDoc(
+          doc(db, "artifacts", PROJECT_ID, "expenses", id.toString()),
+          oldData
+        )
+    );
+  };
+
+  // --- 雲端操作函式 (行李) ---
+  const addPackingItem = async (name) => {
+    const docId = Date.now().toString();
+    await setDoc(doc(db, "artifacts", PROJECT_ID, "packingItems", docId), {
+      id: docId,
+      name,
+      checkedHM: false,
+      checkedCY: false,
+      createdAt: Date.now(),
+    });
+  };
+  const updatePackingItem = async (id, newData) => {
+    await setDoc(
+      doc(db, "artifacts", PROJECT_ID, "packingItems", id.toString()),
+      { ...newData, id: id.toString() }
+    );
+  };
+  const deletePackingItem = async (id) => {
+    await deleteDoc(
+      doc(db, "artifacts", PROJECT_ID, "packingItems", id.toString())
+    );
+  };
+
   if (!currentUser) {
     return (
       <div className="min-h-screen bg-stone-100 flex flex-col items-center justify-center p-4 font-sans text-stone-800">
         <style>{` ::-webkit-scrollbar { display: none; } html { -ms-overflow-style: none; scrollbar-width: none; } `}</style>
-
         <div className="bg-white p-8 rounded-[2rem] shadow-xl w-full max-w-sm text-center border border-stone-200/50 relative overflow-hidden">
           <div className="absolute top-0 right-0 w-32 h-32 bg-stone-100 rounded-full blur-3xl opacity-60"></div>
           <div className="w-16 h-16 bg-stone-900 rounded-2xl flex items-center justify-center mx-auto mb-6 shadow-md relative z-10">
@@ -238,12 +334,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-stone-100 max-w-md mx-auto relative font-sans overflow-x-hidden text-stone-800 antialiased shadow-2xl">
-      <style>{`
-        ::-webkit-scrollbar { display: none; }
-        html { -ms-overflow-style: none; scrollbar-width: none; }
-        @keyframes slide-up { from { transform: translateY(10%); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
-        .animate-slide-up { animation: slide-up 0.3s cubic-bezier(0.16, 1, 0.3, 1); }
-      `}</style>
+      <style>{` ::-webkit-scrollbar { display: none; } html { -ms-overflow-style: none; scrollbar-width: none; } @keyframes slide-up { from { transform: translateY(10%); opacity: 0; } to { transform: translateY(0); opacity: 1; } } .animate-slide-up { animation: slide-up 0.3s cubic-bezier(0.16, 1, 0.3, 1); } `}</style>
 
       {undoNotification && (
         <div className="fixed bottom-28 left-1/2 -translate-x-1/2 z-[99999] bg-stone-800/95 backdrop-blur-md text-white px-5 py-3.5 rounded-2xl shadow-2xl flex items-center justify-between gap-4 animate-slide-up w-11/12 max-w-sm border border-stone-700">
@@ -287,18 +378,21 @@ export default function App() {
         {activeTab === "expenses" && (
           <ExpenseView
             expenses={expenses}
-            setExpenses={setExpenses}
             currentUser={currentUser}
-            triggerUndo={triggerUndo}
+            onAddExpense={addExpense}
+            onUpdateExpense={updateExpense}
+            onDeleteExpense={deleteExpense}
+            onToggleSettle={toggleSettleStatus}
           />
         )}
         {activeTab === "tools" && (
           <PackingListView
             packingItems={packingItems}
-            setPackingItems={setPackingItems}
             recommendedItems={recommendedItems}
             setRecommendedItems={setRecommendedItems}
-            triggerUndo={triggerUndo}
+            onAddPackingItem={addPackingItem}
+            onUpdatePackingItem={updatePackingItem}
+            onDeletePackingItem={deletePackingItem}
           />
         )}
       </main>
@@ -415,7 +509,14 @@ function QuickCalculatorModal({ onClose }) {
 // ==========================================
 // 💰 記帳結算主系統元件
 // ==========================================
-function ExpenseView({ expenses, setExpenses, currentUser, triggerUndo }) {
+function ExpenseView({
+  expenses,
+  currentUser,
+  onAddExpense,
+  onUpdateExpense,
+  onDeleteExpense,
+  onToggleSettle,
+}) {
   const [showAddExpense, setShowAddExpense] = useState(false);
   const [showSettlement, setShowSettlement] = useState(false);
   const [showFamilyCostModal, setShowFamilyCostModal] = useState(false);
@@ -423,14 +524,13 @@ function ExpenseView({ expenses, setExpenses, currentUser, triggerUndo }) {
   const [expandedFamily, setExpandedFamily] = useState(null);
 
   const [editingId, setEditingId] = useState(null);
-
   const [title, setTitle] = useState("");
   const [category, setCategory] = useState("飲食");
   const [amountTWD, setAmountTWD] = useState("");
   const [amountKRW, setAmountKRW] = useState("");
   const [payer, setPayer] = useState(currentUser);
   const [splitType, setSplitType] = useState("大家共同");
-  const [personalTarget, setPersonalTarget] = useState(currentUser); // 新增：用來指定是誰的個人花費
+  const [personalTarget, setPersonalTarget] = useState(currentUser);
 
   const [hasExtra, setHasExtra] = useState(false);
   const [extraTarget, setExtraTarget] = useState("邱袁共同");
@@ -444,7 +544,6 @@ function ExpenseView({ expenses, setExpenses, currentUser, triggerUndo }) {
     0
   );
 
-  // 1. 計算「未結算」的各自負擔額度 (顯示在黑色面板上)
   const personalCosts = useMemo(() => {
     const costs = { 黃子庭: 0, 馬國郡: 0, 邱靖涵: 0, 袁家駿: 0 };
     pendingExpenses.forEach((exp) => {
@@ -476,7 +575,6 @@ function ExpenseView({ expenses, setExpenses, currentUser, triggerUndo }) {
     return costs;
   }, [pendingExpenses]);
 
-  // 2. ⭐️ 為「家族與個人開銷」建立完整的「家族共同」與「個人專屬」細節資料 (包含已結清)
   const familyDetails = useMemo(() => {
     const initCats = () =>
       CATEGORIES.reduce(
@@ -506,7 +604,6 @@ function ExpenseView({ expenses, setExpenses, currentUser, triggerUndo }) {
         if (amount <= 0) return;
         const perPerson = amount / targets.length;
 
-        // 黃馬家處理
         const hmTargets = targets.filter((t) =>
           ["黃子庭", "馬國郡"].includes(t)
         );
@@ -532,7 +629,6 @@ function ExpenseView({ expenses, setExpenses, currentUser, triggerUndo }) {
           }
         }
 
-        // 邱袁家處理
         const cyTargets = targets.filter((t) =>
           ["邱靖涵", "袁家駿"].includes(t)
         );
@@ -726,7 +822,6 @@ function ExpenseView({ expenses, setExpenses, currentUser, triggerUndo }) {
 
   const handleSubmitExpense = () => {
     if (!title || (!amountTWD && !amountKRW) || isExtraInvalid) return;
-    const oldExpenses = [...expenses];
     let extraData = null;
     if (hasExtra && extraAmountTWD && parseFloat(extraAmountTWD) > 0) {
       extraData = {
@@ -745,49 +840,17 @@ function ExpenseView({ expenses, setExpenses, currentUser, triggerUndo }) {
       personalTarget: splitType === "個人專屬" ? personalTarget : null,
       extra: extraData,
       date: new Date().toISOString(),
+      isSettled: false,
     };
 
     if (editingId) {
-      setExpenses((prev) =>
-        prev.map((e) => (e.id === editingId ? { ...e, ...expenseData } : e))
-      );
-      triggerUndo(`已修改「${title}」`, () => setExpenses(oldExpenses));
+      onUpdateExpense(editingId, expenseData);
     } else {
-      setExpenses([
-        { id: Date.now(), ...expenseData, isSettled: false },
-        ...expenses,
-      ]);
-      triggerUndo(`已新增「${title}」`, () => setExpenses(oldExpenses));
+      onAddExpense(expenseData);
     }
     setShowAddExpense(false);
   };
 
-  const handleDeleteExpense = (id) => {
-    const expToDelete = expenses.find((e) => e.id === id);
-    const oldExpenses = [...expenses];
-    setExpenses((prev) => prev.filter((e) => e.id !== id));
-    triggerUndo(`已刪除「${expToDelete.title}」`, () =>
-      setExpenses(oldExpenses)
-    );
-  };
-
-  const toggleSettleStatus = (id) => {
-    const expToToggle = expenses.find((e) => e.id === id);
-    const oldExpenses = [...expenses];
-    setExpenses((prev) =>
-      prev.map((exp) =>
-        exp.id === id ? { ...exp, isSettled: !exp.isSettled } : exp
-      )
-    );
-    triggerUndo(
-      expToToggle.isSettled
-        ? `已取消結清「${expToToggle.title}」`
-        : `已結清「${expToToggle.title}」`,
-      () => setExpenses(oldExpenses)
-    );
-  };
-
-  // 專門用來繪製「分類明細」的小元件
   const renderCategoryData = (data, titleText, IconComp, colorClass) => {
     if (data.total === 0) return null;
     return (
@@ -843,7 +906,6 @@ function ExpenseView({ expenses, setExpenses, currentUser, triggerUndo }) {
 
   return (
     <div className="p-4 pb-10">
-      {/* 總看板 */}
       <div className="bg-gradient-to-br from-stone-800 to-stone-900 rounded-[2rem] p-6 text-white mb-6 shadow-xl relative overflow-hidden">
         <div className="absolute top-0 right-0 w-40 h-40 bg-white/5 rounded-full -translate-y-10 translate-x-10 blur-2xl"></div>
         <div className="flex justify-between items-start mb-6 relative z-10">
@@ -873,7 +935,6 @@ function ExpenseView({ expenses, setExpenses, currentUser, triggerUndo }) {
           </div>
         </div>
 
-        {/* 各自花費儀表板 */}
         <div className="bg-stone-800/50 rounded-2xl p-4 border border-stone-700/50 relative z-10">
           <p className="text-[10px] text-stone-400 font-bold uppercase tracking-widest mb-3 flex items-center gap-1.5">
             <User className="w-3 h-3" /> 目前每人各自應付
@@ -906,7 +967,6 @@ function ExpenseView({ expenses, setExpenses, currentUser, triggerUndo }) {
         </button>
       </div>
 
-      {/* 待結算列表 */}
       <div className="space-y-3 mb-8">
         {pendingExpenses.length === 0 ? (
           <div className="text-center py-10 bg-white rounded-[1.5rem] border border-stone-200 border-dashed">
@@ -924,7 +984,6 @@ function ExpenseView({ expenses, setExpenses, currentUser, triggerUndo }) {
               CATEGORIES.find((c) => c.name === exp.category) || CATEGORIES[0];
             const CatIcon = catInfo.icon;
 
-            // 🔥 個人專屬的標籤顏色優化
             let badgeColor = "bg-stone-100 text-stone-500";
             let badgeText = exp.splitType;
             if (exp.splitType === "黃馬共同")
@@ -986,7 +1045,7 @@ function ExpenseView({ expenses, setExpenses, currentUser, triggerUndo }) {
                 </div>
                 <div className="flex items-center gap-1.5 flex-shrink-0 relative z-10 pl-2">
                   <button
-                    onClick={() => toggleSettleStatus(exp.id)}
+                    onClick={() => onToggleSettle(exp.id)}
                     className="flex flex-col items-center justify-center bg-emerald-50 text-emerald-600 hover:bg-emerald-500 hover:text-white border border-emerald-100 px-3 py-2 rounded-xl transition-colors active:scale-95"
                     title="標記為已結清"
                   >
@@ -994,7 +1053,7 @@ function ExpenseView({ expenses, setExpenses, currentUser, triggerUndo }) {
                     <span className="text-[9px] font-bold mt-0.5">結清</span>
                   </button>
                   <button
-                    onClick={() => handleDeleteExpense(exp.id)}
+                    onClick={() => onDeleteExpense(exp.id)}
                     className="p-2 text-stone-300 hover:text-red-500 hover:bg-red-50 rounded-xl transition-colors active:scale-95"
                   >
                     <Trash2 className="w-4 h-4" />
@@ -1006,7 +1065,6 @@ function ExpenseView({ expenses, setExpenses, currentUser, triggerUndo }) {
         )}
       </div>
 
-      {/* 已結清歷史 */}
       {settledExpenses.length > 0 && (
         <div className="mt-8 border-t border-stone-200 pt-6">
           <button
@@ -1065,7 +1123,7 @@ function ExpenseView({ expenses, setExpenses, currentUser, triggerUndo }) {
                     </div>
                     <div className="flex items-center gap-1 flex-shrink-0">
                       <button
-                        onClick={() => toggleSettleStatus(exp.id)}
+                        onClick={() => onToggleSettle(exp.id)}
                         className="flex flex-col items-center justify-center text-stone-400 hover:text-stone-700 bg-white border border-stone-200 px-3 py-1.5 rounded-xl transition-colors active:scale-95 shadow-sm"
                         title="取消結清，加回待結算"
                       >
@@ -1075,7 +1133,7 @@ function ExpenseView({ expenses, setExpenses, currentUser, triggerUndo }) {
                         </span>
                       </button>
                       <button
-                        onClick={() => handleDeleteExpense(exp.id)}
+                        onClick={() => onDeleteExpense(exp.id)}
                         className="p-1.5 text-stone-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors active:scale-95"
                       >
                         <Trash2 className="w-3 h-3" />
@@ -1089,7 +1147,6 @@ function ExpenseView({ expenses, setExpenses, currentUser, triggerUndo }) {
         </div>
       )}
 
-      {/* ⭐️ 全新：家族與個人開銷 (含分類明細) Modal */}
       {showFamilyCostModal && (
         <div
           className="fixed inset-0 bg-stone-900/60 z-[9999] flex items-center justify-center p-4 backdrop-blur-md"
@@ -1195,7 +1252,7 @@ function ExpenseView({ expenses, setExpenses, currentUser, triggerUndo }) {
                       : "border-blue-200 text-blue-600 hover:bg-blue-100"
                   }`}
                 >
-                  <PieChart className="w-3.5 h-3.5" />
+                  <PieChart className="w-3.5 h-3.5" />{" "}
                   {expandedFamily === "HM"
                     ? "收起詳細拆帳分類"
                     : "展開詳細拆帳分類"}
@@ -1316,7 +1373,7 @@ function ExpenseView({ expenses, setExpenses, currentUser, triggerUndo }) {
                       : "border-amber-200 text-amber-600 hover:bg-amber-100"
                   }`}
                 >
-                  <PieChart className="w-3.5 h-3.5" />
+                  <PieChart className="w-3.5 h-3.5" />{" "}
                   {expandedFamily === "CY"
                     ? "收起詳細拆帳分類"
                     : "展開詳細拆帳分類"}
@@ -1362,7 +1419,6 @@ function ExpenseView({ expenses, setExpenses, currentUser, triggerUndo }) {
         </div>
       )}
 
-      {/* 新增/編輯記帳 Modal */}
       {showAddExpense && (
         <div className="fixed inset-0 bg-stone-900/60 z-[9999] flex items-end justify-center sm:items-center p-4 pb-0 backdrop-blur-sm">
           <div className="bg-white rounded-t-[2rem] sm:rounded-[2rem] p-6 w-full max-w-md max-h-[95vh] overflow-y-auto animate-slide-up shadow-2xl">
@@ -1522,7 +1578,6 @@ function ExpenseView({ expenses, setExpenses, currentUser, triggerUndo }) {
                 </div>
               )}
 
-              {/* 包含專屬費用 Toggle 區塊 */}
               <div className="pt-2 border-t border-stone-100">
                 <button
                   onClick={() => setHasExtra(!hasExtra)}
@@ -1532,10 +1587,9 @@ function ExpenseView({ expenses, setExpenses, currentUser, triggerUndo }) {
                     <ChevronUp className="w-4 h-4" />
                   ) : (
                     <Plus className="w-4 h-4" />
-                  )}
+                  )}{" "}
                   + 包含特定家族的專屬花費嗎？(例如兒童餐)
                 </button>
-
                 {hasExtra && (
                   <div className="mt-3 p-4 bg-orange-50/50 rounded-2xl border border-orange-200 space-y-4 animate-slide-up">
                     <div>
@@ -1648,7 +1702,6 @@ function ExpenseView({ expenses, setExpenses, currentUser, triggerUndo }) {
         </div>
       )}
 
-      {/* 最終結算表 Modal */}
       {showSettlement && (
         <div
           className="fixed inset-0 bg-stone-900/60 z-[9999] flex items-center justify-center p-4 backdrop-blur-md"
@@ -1711,87 +1764,41 @@ function ExpenseView({ expenses, setExpenses, currentUser, triggerUndo }) {
 // ==========================================
 function PackingListView({
   packingItems,
-  setPackingItems,
+  onAddPackingItem,
+  onUpdatePackingItem,
+  onDeletePackingItem,
   recommendedItems,
   setRecommendedItems,
-  triggerUndo,
 }) {
   const [newItemName, setNewItemName] = useState("");
   const [editingId, setEditingId] = useState(null);
   const [editName, setEditName] = useState("");
 
   const toggleHM = (id) => {
-    const oldItems = [...packingItems];
-    setPackingItems((prev) =>
-      prev.map((item) =>
-        item.id === id ? { ...item, checkedHM: !item.checkedHM } : item
-      )
-    );
-    triggerUndo("已更新準備狀態", () => setPackingItems(oldItems));
+    const item = packingItems.find((i) => i.id === id);
+    onUpdatePackingItem(id, { ...item, checkedHM: !item.checkedHM });
   };
-
   const toggleCY = (id) => {
-    const oldItems = [...packingItems];
-    setPackingItems((prev) =>
-      prev.map((item) =>
-        item.id === id ? { ...item, checkedCY: !item.checkedCY } : item
-      )
-    );
-    triggerUndo("已更新準備狀態", () => setPackingItems(oldItems));
+    const item = packingItems.find((i) => i.id === id);
+    onUpdatePackingItem(id, { ...item, checkedCY: !item.checkedCY });
   };
-
-  const deleteItem = (id) => {
-    const itemToDelete = packingItems.find((i) => i.id === id);
-    const oldItems = [...packingItems];
-    setPackingItems((prev) => prev.filter((item) => item.id !== id));
-    triggerUndo(`已刪除「${itemToDelete.name}」`, () =>
-      setPackingItems(oldItems)
-    );
-  };
-
   const handleAddCustom = () => {
     if (!newItemName.trim()) return;
-    const oldItems = [...packingItems];
-    setPackingItems([
-      ...packingItems,
-      {
-        id: Date.now(),
-        name: newItemName.trim(),
-        checkedHM: false,
-        checkedCY: false,
-      },
-    ]);
+    onAddPackingItem(newItemName.trim());
     setNewItemName("");
-    triggerUndo(`已新增行李項目`, () => setPackingItems(oldItems));
   };
-
   const handleAddRecommended = (itemStr) => {
-    const oldItems = [...packingItems];
-    const oldRecommended = [...recommendedItems];
-    setPackingItems([
-      ...packingItems,
-      { id: Date.now(), name: itemStr, checkedHM: false, checkedCY: false },
-    ]);
+    onAddPackingItem(itemStr);
     setRecommendedItems((prev) => prev.filter((i) => i !== itemStr));
-    triggerUndo(`已新增推薦項目`, () => {
-      setPackingItems(oldItems);
-      setRecommendedItems(oldRecommended);
-    });
   };
-
   const handleSaveEdit = (id) => {
     if (!editName.trim()) {
       setEditingId(null);
       return;
     }
-    const oldItems = [...packingItems];
-    setPackingItems((prev) =>
-      prev.map((item) =>
-        item.id === id ? { ...item, name: editName.trim() } : item
-      )
-    );
+    const item = packingItems.find((i) => i.id === id);
+    onUpdatePackingItem(id, { ...item, name: editName.trim() });
     setEditingId(null);
-    triggerUndo(`已修改行李項目`, () => setPackingItems(oldItems));
   };
 
   return (
@@ -1867,7 +1874,6 @@ function PackingListView({
                   </span>
                 )}
               </div>
-
               <div className="flex items-center gap-2 justify-end">
                 <button
                   onClick={() => toggleHM(item.id)}
@@ -1900,7 +1906,7 @@ function PackingListView({
                   邱袁
                 </button>
                 <button
-                  onClick={() => deleteItem(item.id)}
+                  onClick={() => onDeletePackingItem(item.id)}
                   className="p-1.5 text-stone-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors ml-1"
                 >
                   <Trash2 className="w-4 h-4" />
