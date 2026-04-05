@@ -26,6 +26,8 @@ import {
   ChevronUp,
   SplitSquareVertical,
   ArrowDown,
+  Edit3,
+  Check,
 } from "lucide-react";
 
 // ==========================================
@@ -83,6 +85,9 @@ export default function App() {
 
   const [activeTab, setActiveTab] = useState("expenses");
   const [showCalculator, setShowCalculator] = useState(false);
+
+  // Undo 狀態管理
+  const [undoNotification, setUndoNotification] = useState(null);
 
   const [expenses, setExpenses] = useState([
     {
@@ -155,6 +160,22 @@ export default function App() {
     localStorage.removeItem("busan_trip_user");
   };
 
+  // 觸發復原提示的共用函式
+  const triggerUndo = (msg, rollbackFn) => {
+    const id = Date.now();
+    setUndoNotification({ id, msg, rollback: rollbackFn });
+    setTimeout(() => {
+      setUndoNotification((curr) => (curr?.id === id ? null : curr));
+    }, 5000);
+  };
+
+  const executeUndo = () => {
+    if (undoNotification && undoNotification.rollback) {
+      undoNotification.rollback();
+      setUndoNotification(null);
+    }
+  };
+
   if (!currentUser) {
     return (
       <div className="min-h-screen bg-stone-100 flex flex-col items-center justify-center p-4 font-sans text-stone-800">
@@ -221,6 +242,21 @@ export default function App() {
         .animate-slide-up { animation: slide-up 0.3s cubic-bezier(0.16, 1, 0.3, 1); }
       `}</style>
 
+      {/* 復原提示小精靈 */}
+      {undoNotification && (
+        <div className="fixed bottom-28 left-1/2 -translate-x-1/2 z-[99999] bg-stone-800/95 backdrop-blur-md text-white px-5 py-3.5 rounded-2xl shadow-2xl flex items-center justify-between gap-4 animate-slide-up w-11/12 max-w-sm border border-stone-700">
+          <span className="flex-1 text-sm font-medium truncate">
+            {undoNotification.msg}
+          </span>
+          <button
+            onClick={executeUndo}
+            className="flex items-center gap-1.5 bg-white/10 hover:bg-white/20 text-white px-4 py-2 rounded-xl text-xs font-bold active:scale-95 transition-all"
+          >
+            <Undo2 className="w-4 h-4" /> 復原
+          </button>
+        </div>
+      )}
+
       <header className="bg-stone-900 text-white pt-12 pb-5 px-6 rounded-b-[2rem] shadow-lg z-10 flex-shrink-0 relative">
         <div className="flex justify-between items-center mb-1 relative z-10">
           <div>
@@ -251,6 +287,7 @@ export default function App() {
             expenses={expenses}
             setExpenses={setExpenses}
             currentUser={currentUser}
+            triggerUndo={triggerUndo}
           />
         )}
         {activeTab === "tools" && (
@@ -259,6 +296,7 @@ export default function App() {
             setPackingItems={setPackingItems}
             recommendedItems={recommendedItems}
             setRecommendedItems={setRecommendedItems}
+            triggerUndo={triggerUndo}
           />
         )}
       </main>
@@ -375,10 +413,13 @@ function QuickCalculatorModal({ onClose }) {
 // ==========================================
 // 💰 記帳結算主系統元件
 // ==========================================
-function ExpenseView({ expenses, setExpenses, currentUser }) {
+function ExpenseView({ expenses, setExpenses, currentUser, triggerUndo }) {
   const [showAddExpense, setShowAddExpense] = useState(false);
   const [showSettlement, setShowSettlement] = useState(false);
   const [showSettledHistory, setShowSettledHistory] = useState(false);
+
+  // 用來記錄目前正在編輯的 ID (如果是 null 代表是新增)
+  const [editingId, setEditingId] = useState(null);
 
   const [title, setTitle] = useState("");
   const [category, setCategory] = useState("飲食");
@@ -523,33 +564,9 @@ function ExpenseView({ expenses, setExpenses, currentUser }) {
     amountTWD &&
     parseFloat(extraAmountTWD) >= parseFloat(amountTWD);
 
-  const handleAddExpense = () => {
-    if (!title || (!amountTWD && !amountKRW) || isExtraInvalid) return;
-    let extraData = null;
-    if (hasExtra && extraAmountTWD && parseFloat(extraAmountTWD) > 0) {
-      extraData = {
-        target: extraTarget,
-        amountTWD: parseFloat(extraAmountTWD),
-        amountKRW: parseFloat(extraAmountKRW),
-      };
-    }
-    setExpenses([
-      {
-        id: Date.now(),
-        payer,
-        title,
-        category,
-        amountTWD: parseFloat(amountTWD || 0),
-        amountKRW: parseFloat(amountKRW || 0),
-        splitType,
-        extra: extraData,
-        date: new Date().toISOString(),
-        isSettled: false,
-      },
-      ...expenses,
-    ]);
-
-    setShowAddExpense(false);
+  // 點擊新增按鈕：清空表單
+  const handleAddClick = () => {
+    setEditingId(null);
     setTitle("");
     setAmountTWD("");
     setAmountKRW("");
@@ -559,16 +576,99 @@ function ExpenseView({ expenses, setExpenses, currentUser }) {
     setExtraTarget("邱袁共同");
     setExtraAmountKRW("");
     setExtraAmountTWD("");
+    setShowAddExpense(true);
   };
 
-  const handleDeleteExpense = (id) =>
+  // 點擊編輯按鈕：載入資料到表單
+  const handleEditClick = (exp) => {
+    setEditingId(exp.id);
+    setTitle(exp.title);
+    setCategory(exp.category);
+    setAmountTWD(exp.amountTWD.toString());
+    setAmountKRW(exp.amountKRW.toString());
+    setPayer(exp.payer);
+    setSplitType(exp.splitType);
+    if (exp.extra) {
+      setHasExtra(true);
+      setExtraTarget(exp.extra.target);
+      setExtraAmountTWD(exp.extra.amountTWD.toString());
+      setExtraAmountKRW(exp.extra.amountKRW.toString());
+    } else {
+      setHasExtra(false);
+      setExtraAmountTWD("");
+      setExtraAmountKRW("");
+    }
+    setShowAddExpense(true);
+  };
+
+  // 儲存修改或新增
+  const handleSubmitExpense = () => {
+    if (!title || (!amountTWD && !amountKRW) || isExtraInvalid) return;
+
+    const oldExpenses = [...expenses]; // 備份舊資料給 Undo 使用
+
+    let extraData = null;
+    if (hasExtra && extraAmountTWD && parseFloat(extraAmountTWD) > 0) {
+      extraData = {
+        target: extraTarget,
+        amountTWD: parseFloat(extraAmountTWD),
+        amountKRW: parseFloat(extraAmountKRW),
+      };
+    }
+
+    const expenseData = {
+      payer,
+      title,
+      category,
+      amountTWD: parseFloat(amountTWD || 0),
+      amountKRW: parseFloat(amountKRW || 0),
+      splitType,
+      extra: extraData,
+      date: new Date().toISOString(),
+    };
+
+    if (editingId) {
+      // 這是修改
+      setExpenses((prev) =>
+        prev.map((e) => (e.id === editingId ? { ...e, ...expenseData } : e))
+      );
+      triggerUndo(`已修改「${title}」`, () => setExpenses(oldExpenses));
+    } else {
+      // 這是新增
+      setExpenses([
+        { id: Date.now(), ...expenseData, isSettled: false },
+        ...expenses,
+      ]);
+      triggerUndo(`已新增「${title}」`, () => setExpenses(oldExpenses));
+    }
+
+    setShowAddExpense(false);
+  };
+
+  const handleDeleteExpense = (id) => {
+    const expToDelete = expenses.find((e) => e.id === id);
+    const oldExpenses = [...expenses];
     setExpenses((prev) => prev.filter((e) => e.id !== id));
-  const toggleSettleStatus = (id) =>
+    triggerUndo(`已刪除「${expToDelete.title}」`, () =>
+      setExpenses(oldExpenses)
+    );
+  };
+
+  const toggleSettleStatus = (id) => {
+    const expToToggle = expenses.find((e) => e.id === id);
+    const oldExpenses = [...expenses];
     setExpenses((prev) =>
       prev.map((exp) =>
         exp.id === id ? { ...exp, isSettled: !exp.isSettled } : exp
       )
     );
+    triggerUndo(
+      expToToggle.isSettled
+        ? `已取消結清「${expToToggle.title}」`
+        : `已結清「${expToToggle.title}」`,
+      () => setExpenses(oldExpenses)
+    );
+  };
 
   return (
     <div className="p-4 pb-10">
@@ -620,7 +720,7 @@ function ExpenseView({ expenses, setExpenses, currentUser }) {
           待結算明細
         </h3>
         <button
-          onClick={() => setShowAddExpense(true)}
+          onClick={handleAddClick}
           className="bg-stone-900 text-white p-2.5 px-4 rounded-full shadow-md hover:bg-stone-800 transition-all flex items-center gap-1 text-xs font-bold active:scale-95"
         >
           <Plus className="w-4 h-4" /> 記一筆
@@ -657,9 +757,19 @@ function ExpenseView({ expenses, setExpenses, currentUser }) {
                 key={exp.id}
                 className="bg-white p-4 rounded-[1.5rem] shadow-sm border border-stone-200 flex items-center justify-between group transition-all relative overflow-hidden"
               >
-                <div className="flex items-center gap-3 relative z-10 w-full overflow-hidden">
-                  <div className="w-11 h-11 rounded-[14px] bg-stone-50 flex items-center justify-center border border-stone-100 flex-shrink-0 text-stone-600">
-                    <CatIcon className="w-5 h-5" strokeWidth={1.5} />
+                <div
+                  className="flex items-center gap-3 relative z-10 w-full overflow-hidden cursor-pointer hover:opacity-80 active:opacity-60 transition-opacity"
+                  onClick={() => handleEditClick(exp)}
+                >
+                  <div className="w-11 h-11 rounded-[14px] bg-stone-50 flex items-center justify-center border border-stone-100 flex-shrink-0 text-stone-600 relative">
+                    <CatIcon
+                      className="w-5 h-5 group-hover:opacity-0 transition-opacity"
+                      strokeWidth={1.5}
+                    />
+                    <Edit3
+                      className="w-5 h-5 absolute text-blue-500 opacity-0 group-hover:opacity-100 transition-opacity"
+                      strokeWidth={2}
+                    />
                   </div>
                   <div className="overflow-hidden w-full">
                     <h4 className="font-bold text-stone-800 text-sm mb-1 truncate pr-2">
@@ -736,13 +846,23 @@ function ExpenseView({ expenses, setExpenses, currentUser }) {
                 return (
                   <div
                     key={exp.id}
-                    className="bg-stone-100 p-3.5 rounded-[1.5rem] border border-stone-200 flex items-center justify-between group"
+                    className="bg-stone-100 p-3.5 rounded-[1.5rem] border border-stone-200 flex items-center justify-between group cursor-pointer hover:bg-stone-200"
                   >
-                    <div className="flex items-center gap-3 opacity-60">
-                      <div className="w-10 h-10 rounded-xl bg-stone-200 flex items-center justify-center text-stone-500">
-                        <CatIcon className="w-4 h-4" strokeWidth={1.5} />
+                    <div
+                      className="flex items-center gap-3 opacity-60 flex-1"
+                      onClick={() => handleEditClick(exp)}
+                    >
+                      <div className="w-10 h-10 rounded-xl bg-stone-200 flex items-center justify-center text-stone-500 relative">
+                        <CatIcon
+                          className="w-4 h-4 group-hover:opacity-0 transition-opacity"
+                          strokeWidth={1.5}
+                        />
+                        <Edit3
+                          className="w-4 h-4 absolute text-blue-500 opacity-0 group-hover:opacity-100 transition-opacity"
+                          strokeWidth={2}
+                        />
                       </div>
-                      <div>
+                      <div className="flex-1">
                         <h4 className="font-bold text-stone-600 text-xs mb-1 line-through">
                           {exp.title}
                         </h4>
@@ -782,12 +902,14 @@ function ExpenseView({ expenses, setExpenses, currentUser }) {
         </div>
       )}
 
-      {/* 新增記帳 Modal */}
+      {/* 新增/編輯記帳 Modal */}
       {showAddExpense && (
         <div className="fixed inset-0 bg-stone-900/60 z-[9999] flex items-end justify-center sm:items-center p-4 pb-0 backdrop-blur-sm">
           <div className="bg-white rounded-t-[2rem] sm:rounded-[2rem] p-6 w-full max-w-md max-h-[95vh] overflow-y-auto animate-slide-up shadow-2xl">
             <div className="flex justify-between items-center mb-6 sticky top-0 bg-white z-10 py-2 border-b border-stone-100">
-              <h2 className="text-xl font-black text-stone-800">新增花費</h2>
+              <h2 className="text-xl font-black text-stone-800">
+                {editingId ? "修改花費" : "新增花費"}
+              </h2>
               <button
                 onClick={() => setShowAddExpense(false)}
                 className="text-stone-400 hover:bg-stone-100 p-2 rounded-full"
@@ -1029,11 +1151,11 @@ function ExpenseView({ expenses, setExpenses, currentUser }) {
               </div>
 
               <button
-                onClick={handleAddExpense}
+                onClick={handleSubmitExpense}
                 disabled={!title || !amountTWD || isExtraInvalid}
                 className="w-full py-4 mt-2 bg-stone-900 hover:bg-stone-800 text-white rounded-xl font-bold text-sm disabled:opacity-30 transition-all active:scale-95 flex justify-center items-center shadow-lg"
               >
-                儲存花費
+                {editingId ? "儲存修改" : "新增花費"}
               </button>
             </div>
           </div>
@@ -1106,26 +1228,44 @@ function PackingListView({
   setPackingItems,
   recommendedItems,
   setRecommendedItems,
+  triggerUndo,
 }) {
   const [newItemName, setNewItemName] = useState("");
+  const [editingId, setEditingId] = useState(null);
+  const [editName, setEditName] = useState("");
 
-  const toggleHM = (id) =>
+  const toggleHM = (id) => {
+    const oldItems = [...packingItems];
     setPackingItems((prev) =>
       prev.map((item) =>
         item.id === id ? { ...item, checkedHM: !item.checkedHM } : item
       )
     );
-  const toggleCY = (id) =>
+    triggerUndo("已更新準備狀態", () => setPackingItems(oldItems));
+  };
+
+  const toggleCY = (id) => {
+    const oldItems = [...packingItems];
     setPackingItems((prev) =>
       prev.map((item) =>
         item.id === id ? { ...item, checkedCY: !item.checkedCY } : item
       )
     );
-  const deleteItem = (id) =>
+    triggerUndo("已更新準備狀態", () => setPackingItems(oldItems));
+  };
+
+  const deleteItem = (id) => {
+    const itemToDelete = packingItems.find((i) => i.id === id);
+    const oldItems = [...packingItems];
     setPackingItems((prev) => prev.filter((item) => item.id !== id));
+    triggerUndo(`已刪除「${itemToDelete.name}」`, () =>
+      setPackingItems(oldItems)
+    );
+  };
 
   const handleAddCustom = () => {
     if (!newItemName.trim()) return;
+    const oldItems = [...packingItems];
     setPackingItems([
       ...packingItems,
       {
@@ -1136,14 +1276,39 @@ function PackingListView({
       },
     ]);
     setNewItemName("");
+    triggerUndo(`已新增行李項目`, () => setPackingItems(oldItems));
   };
 
   const handleAddRecommended = (itemStr) => {
+    const oldItems = [...packingItems];
+    const oldRecommended = [...recommendedItems];
+
     setPackingItems([
       ...packingItems,
       { id: Date.now(), name: itemStr, checkedHM: false, checkedCY: false },
     ]);
     setRecommendedItems((prev) => prev.filter((i) => i !== itemStr));
+
+    triggerUndo(`已新增推薦項目`, () => {
+      setPackingItems(oldItems);
+      setRecommendedItems(oldRecommended);
+    });
+  };
+
+  // 行李清單的修改儲存
+  const handleSaveEdit = (id) => {
+    if (!editName.trim()) {
+      setEditingId(null);
+      return;
+    }
+    const oldItems = [...packingItems];
+    setPackingItems((prev) =>
+      prev.map((item) =>
+        item.id === id ? { ...item, name: editName.trim() } : item
+      )
+    );
+    setEditingId(null);
+    triggerUndo(`已修改行李項目`, () => setPackingItems(oldItems));
   };
 
   return (
@@ -1190,16 +1355,36 @@ function PackingListView({
               className="bg-white p-3.5 pr-2 rounded-[1.5rem] shadow-sm border border-stone-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3 group"
             >
               <div className="flex items-center gap-2 flex-1 pl-1">
-                <span
-                  className={`font-bold text-sm ${
-                    item.checkedHM && item.checkedCY
-                      ? "text-stone-400 line-through"
-                      : "text-stone-800"
-                  }`}
-                >
-                  {item.name}
-                </span>
+                {editingId === item.id ? (
+                  <div className="flex w-full items-center gap-2 pr-2">
+                    <input
+                      autoFocus
+                      type="text"
+                      value={editName}
+                      onChange={(e) => setEditName(e.target.value)}
+                      className="flex-1 border-b-2 border-stone-800 focus:outline-none text-sm font-bold text-stone-800 py-1"
+                    />
+                    <button
+                      onClick={() => handleSaveEdit(item.id)}
+                      className="p-1.5 bg-stone-800 text-white rounded-lg"
+                    >
+                      <Check className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                ) : (
+                  <span
+                    onClick={() => {
+                      setEditingId(item.id);
+                      setEditName(item.name);
+                    }}
+                    className="font-bold text-sm text-stone-800 cursor-text hover:text-blue-600 transition-colors flex items-center gap-2"
+                  >
+                    {item.name}{" "}
+                    <Edit3 className="w-3 h-3 text-stone-300 opacity-0 group-hover:opacity-100" />
+                  </span>
+                )}
               </div>
+
               <div className="flex items-center gap-2 justify-end">
                 <button
                   onClick={() => toggleHM(item.id)}
