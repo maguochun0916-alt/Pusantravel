@@ -62,14 +62,14 @@ const SPLIT_OPTIONS = [
   { id: "大家共同", label: "四人平分", desc: "黃馬邱袁", icon: Users },
   { id: "黃馬共同", label: "黃馬負擔", desc: "子庭+國郡", icon: Users },
   { id: "邱袁共同", label: "邱袁負擔", desc: "含樂樂👶", icon: Baby },
-  { id: "個人專屬", label: "自己付", desc: "僅墊錢者", icon: User },
+  { id: "個人專屬", label: "單獨個人", desc: "指定某人負擔", icon: User },
 ];
 
-const getSplitIndividuals = (type, payerName) => {
+const getSplitIndividuals = (type, payerName, personalTarget) => {
   if (type === "大家共同") return ["黃子庭", "馬國郡", "邱靖涵", "袁家駿"];
   if (type === "黃馬共同") return ["黃子庭", "馬國郡"];
   if (type === "邱袁共同") return ["邱靖涵", "袁家駿"];
-  if (type === "個人專屬") return [payerName];
+  if (type === "個人專屬") return [personalTarget || payerName];
   return [type];
 };
 
@@ -99,6 +99,7 @@ export default function App() {
       amountTWD: 34000,
       amountKRW: 1445000,
       splitType: "大家共同",
+      personalTarget: null,
       extra: null,
       date: new Date().toISOString(),
       isSettled: false,
@@ -111,6 +112,7 @@ export default function App() {
       amountTWD: 2200,
       amountKRW: 93500,
       splitType: "大家共同",
+      personalTarget: null,
       extra: null,
       date: new Date().toISOString(),
       isSettled: false,
@@ -123,6 +125,7 @@ export default function App() {
       amountTWD: 20000,
       amountKRW: 850000,
       splitType: "大家共同",
+      personalTarget: null,
       extra: { target: "邱袁共同", amountTWD: 2000, amountKRW: 85000 },
       date: new Date().toISOString(),
       isSettled: false,
@@ -161,7 +164,6 @@ export default function App() {
     localStorage.removeItem("busan_trip_user");
   };
 
-  // 觸發復原提示的共用函式
   const triggerUndo = (msg, rollbackFn) => {
     const id = Date.now();
     setUndoNotification({ id, msg, rollback: rollbackFn });
@@ -243,7 +245,6 @@ export default function App() {
         .animate-slide-up { animation: slide-up 0.3s cubic-bezier(0.16, 1, 0.3, 1); }
       `}</style>
 
-      {/* 復原提示小精靈 */}
       {undoNotification && (
         <div className="fixed bottom-28 left-1/2 -translate-x-1/2 z-[99999] bg-stone-800/95 backdrop-blur-md text-white px-5 py-3.5 rounded-2xl shadow-2xl flex items-center justify-between gap-4 animate-slide-up w-11/12 max-w-sm border border-stone-700">
           <span className="flex-1 text-sm font-medium truncate">
@@ -421,7 +422,6 @@ function ExpenseView({ expenses, setExpenses, currentUser, triggerUndo }) {
   const [showSettledHistory, setShowSettledHistory] = useState(false);
   const [expandedFamily, setExpandedFamily] = useState(null);
 
-  // 用來記錄目前正在編輯的 ID
   const [editingId, setEditingId] = useState(null);
 
   const [title, setTitle] = useState("");
@@ -430,6 +430,7 @@ function ExpenseView({ expenses, setExpenses, currentUser, triggerUndo }) {
   const [amountKRW, setAmountKRW] = useState("");
   const [payer, setPayer] = useState(currentUser);
   const [splitType, setSplitType] = useState("大家共同");
+  const [personalTarget, setPersonalTarget] = useState(currentUser); // 新增：用來指定是誰的個人花費
 
   const [hasExtra, setHasExtra] = useState(false);
   const [extraTarget, setExtraTarget] = useState("邱袁共同");
@@ -450,13 +451,21 @@ function ExpenseView({ expenses, setExpenses, currentUser, triggerUndo }) {
       let mainAmount = exp.amountTWD;
       if (exp.extra) {
         mainAmount -= exp.extra.amountTWD;
-        const extraTargets = getSplitIndividuals(exp.extra.target, exp.payer);
+        const extraTargets = getSplitIndividuals(
+          exp.extra.target,
+          exp.payer,
+          null
+        );
         const extraPerPerson = exp.extra.amountTWD / extraTargets.length;
         extraTargets.forEach((person) => {
           if (costs[person] !== undefined) costs[person] += extraPerPerson;
         });
       }
-      const mainTargets = getSplitIndividuals(exp.splitType, exp.payer);
+      const mainTargets = getSplitIndividuals(
+        exp.splitType,
+        exp.payer,
+        exp.personalTarget
+      );
       if (mainTargets.length > 0) {
         const mainPerPerson = mainAmount / mainTargets.length;
         mainTargets.forEach((person) => {
@@ -467,14 +476,13 @@ function ExpenseView({ expenses, setExpenses, currentUser, triggerUndo }) {
     return costs;
   }, [pendingExpenses]);
 
-  // 2. ⭐️ 全新功能：為「家族與個人開銷」建立完整的「家族共同」與「個人專屬」細節資料
+  // 2. ⭐️ 為「家族與個人開銷」建立完整的「家族共同」與「個人專屬」細節資料 (包含已結清)
   const familyDetails = useMemo(() => {
     const initCats = () =>
       CATEGORIES.reduce(
         (acc, c) => ({ ...acc, [c.name]: { total: 0, items: [] } }),
         {}
       );
-
     const result = {
       HM: {
         total: 0,
@@ -494,19 +502,17 @@ function ExpenseView({ expenses, setExpenses, currentUser, triggerUndo }) {
       let mainAmount = exp.amountTWD;
       const cat = exp.category || "飲食";
 
-      // 幫忙把金額和項目丟進對應抽屜的小精靈
       const addAmountToData = (targets, amount, label) => {
         if (amount <= 0) return;
         const perPerson = amount / targets.length;
 
-        // ==== 處理黃馬家 ====
+        // 黃馬家處理
         const hmTargets = targets.filter((t) =>
           ["黃子庭", "馬國郡"].includes(t)
         );
         if (hmTargets.length > 0) {
           const hmTotal = perPerson * hmTargets.length;
           result.HM.total += hmTotal;
-          // 如果這筆是全家人、或是黃馬兩人一起付的，就歸類在「家族共同」
           if (hmTargets.length === 2 || targets.length === 4) {
             result.HM.shared.total += hmTotal;
             result.HM.shared.categories[cat].total += hmTotal;
@@ -515,7 +521,6 @@ function ExpenseView({ expenses, setExpenses, currentUser, triggerUndo }) {
               amount: hmTotal,
             });
           } else {
-            // 只有一個人，歸類在「個人專屬」
             const p = hmTargets[0];
             const pData = p === "黃子庭" ? result.HM.Huang : result.HM.Ma;
             pData.total += hmTotal;
@@ -527,7 +532,7 @@ function ExpenseView({ expenses, setExpenses, currentUser, triggerUndo }) {
           }
         }
 
-        // ==== 處理邱袁家 ====
+        // 邱袁家處理
         const cyTargets = targets.filter((t) =>
           ["邱靖涵", "袁家駿"].includes(t)
         );
@@ -556,11 +561,19 @@ function ExpenseView({ expenses, setExpenses, currentUser, triggerUndo }) {
 
       if (exp.extra) {
         mainAmount -= exp.extra.amountTWD;
-        const extraTargets = getSplitIndividuals(exp.extra.target, exp.payer);
+        const extraTargets = getSplitIndividuals(
+          exp.extra.target,
+          exp.payer,
+          null
+        );
         addAmountToData(extraTargets, exp.extra.amountTWD, " (專屬)");
       }
 
-      const mainTargets = getSplitIndividuals(exp.splitType, exp.payer);
+      const mainTargets = getSplitIndividuals(
+        exp.splitType,
+        exp.payer,
+        exp.personalTarget
+      );
       addAmountToData(mainTargets, mainAmount, "");
     });
 
@@ -574,21 +587,26 @@ function ExpenseView({ expenses, setExpenses, currentUser, triggerUndo }) {
 
   const calculateSettlement = () => {
     const balances = { 黃子庭: 0, 馬國郡: 0, 邱靖涵: 0, 袁家駿: 0 };
-
     pendingExpenses.forEach((exp) => {
       balances[exp.payer] += exp.amountTWD;
       let mainAmount = exp.amountTWD;
-
       if (exp.extra) {
         mainAmount -= exp.extra.amountTWD;
-        const extraTargets = getSplitIndividuals(exp.extra.target, exp.payer);
+        const extraTargets = getSplitIndividuals(
+          exp.extra.target,
+          exp.payer,
+          null
+        );
         const extraPerPerson = exp.extra.amountTWD / extraTargets.length;
         extraTargets.forEach((person) => {
           balances[person] -= extraPerPerson;
         });
       }
-
-      const mainTargets = getSplitIndividuals(exp.splitType, exp.payer);
+      const mainTargets = getSplitIndividuals(
+        exp.splitType,
+        exp.payer,
+        exp.personalTarget
+      );
       if (mainTargets.length > 0) {
         const mainPerPerson = mainAmount / mainTargets.length;
         mainTargets.forEach((person) => {
@@ -607,7 +625,6 @@ function ExpenseView({ expenses, setExpenses, currentUser, triggerUndo }) {
     }
     debtors.sort((a, b) => b.amount - a.amount);
     creditors.sort((a, b) => b.amount - a.amount);
-
     const transactions = [];
     let i = 0,
       j = 0;
@@ -677,6 +694,7 @@ function ExpenseView({ expenses, setExpenses, currentUser, triggerUndo }) {
     setAmountKRW("");
     setSplitType("大家共同");
     setPayer(currentUser);
+    setPersonalTarget(currentUser);
     setHasExtra(false);
     setExtraTarget("邱袁共同");
     setExtraAmountKRW("");
@@ -692,6 +710,7 @@ function ExpenseView({ expenses, setExpenses, currentUser, triggerUndo }) {
     setAmountKRW(exp.amountKRW.toString());
     setPayer(exp.payer);
     setSplitType(exp.splitType);
+    setPersonalTarget(exp.personalTarget || exp.payer);
     if (exp.extra) {
       setHasExtra(true);
       setExtraTarget(exp.extra.target);
@@ -723,6 +742,7 @@ function ExpenseView({ expenses, setExpenses, currentUser, triggerUndo }) {
       amountTWD: parseFloat(amountTWD || 0),
       amountKRW: parseFloat(amountKRW || 0),
       splitType,
+      personalTarget: splitType === "個人專屬" ? personalTarget : null,
       extra: extraData,
       date: new Date().toISOString(),
     };
@@ -768,14 +788,14 @@ function ExpenseView({ expenses, setExpenses, currentUser, triggerUndo }) {
   };
 
   // 專門用來繪製「分類明細」的小元件
-  const renderCategoryData = (data, title, IconComp, colorClass) => {
+  const renderCategoryData = (data, titleText, IconComp, colorClass) => {
     if (data.total === 0) return null;
     return (
       <div className="mt-4">
         <h5
           className={`flex items-center gap-1.5 text-xs font-bold mb-2 bg-white px-3 py-2.5 rounded-xl border border-stone-100 shadow-sm ${colorClass}`}
         >
-          <IconComp className="w-4 h-4" /> {title}
+          <IconComp className="w-4 h-4" /> {titleText}
           <span className="ml-auto font-black">
             ${Math.round(data.total).toLocaleString()}
           </span>
@@ -916,7 +936,7 @@ function ExpenseView({ expenses, setExpenses, currentUser, triggerUndo }) {
             if (exp.splitType === "個人專屬") {
               badgeColor =
                 "bg-purple-50 text-purple-600 border border-purple-100";
-              badgeText = `${exp.payer} 個人`;
+              badgeText = `${exp.personalTarget || exp.payer} 個人`;
             }
 
             return (
@@ -1093,25 +1113,25 @@ function ExpenseView({ expenses, setExpenses, currentUser, triggerUndo }) {
             <div className="p-6 bg-stone-50 space-y-5">
               {/* === 黃馬家區塊 === */}
               <div
-                className={`p-4 rounded-2xl border transition-all ${
+                className={`p-4 rounded-3xl border transition-all ${
                   isHM
-                    ? "bg-blue-50 border-blue-200 shadow-md ring-2 ring-blue-500/20"
+                    ? "bg-blue-50/50 border-blue-200 shadow-md ring-2 ring-blue-500/20"
                     : "bg-white border-stone-200"
                 }`}
               >
                 <h3
-                  className={`font-black text-lg mb-2 flex items-center justify-between ${
+                  className={`font-black text-xl mb-4 flex items-center justify-between ${
                     isHM ? "text-blue-900" : "text-stone-700"
                   }`}
                 >
                   <span>
                     黃馬家{" "}
-                    <span className="text-[10px] font-bold text-stone-400 ml-1">
+                    <span className="text-[11px] font-bold text-stone-400 ml-1">
                       子庭&國郡
                     </span>
                   </span>
-                  <span className="text-xl">
-                    ${hmFamilyTotal.toLocaleString()}
+                  <span className="text-2xl">
+                    ${Math.round(hmFamilyTotal).toLocaleString()}
                   </span>
                 </h3>
                 {isHM && (
@@ -1119,26 +1139,49 @@ function ExpenseView({ expenses, setExpenses, currentUser, triggerUndo }) {
                     這是你的家族專區
                   </span>
                 )}
-                <div className="space-y-1.5 mt-2 pt-3 border-t border-stone-200/60">
-                  <div className="flex justify-between text-xs font-bold text-stone-500">
-                    <span>黃子庭 總負擔</span>
-                    <span className="text-stone-700">
+
+                <div className="space-y-2">
+                  <div className="bg-white p-3 rounded-2xl shadow-sm border border-stone-100 flex justify-between items-center">
+                    <div className="flex flex-col">
+                      <span className="text-xs font-bold text-stone-500 flex items-center gap-1.5">
+                        <Users className="w-3.5 h-3.5" /> 家族共同花費
+                      </span>
+                      <span className="text-[10px] font-medium text-stone-400 mt-0.5">
+                        兩人各分擔 $
+                        {Math.round(
+                          familyDetails.HM.shared.total / 2
+                        ).toLocaleString()}
+                      </span>
+                    </div>
+                    <span className="font-black text-lg text-stone-700">
                       $
                       {Math.round(
-                        familyDetails.HM.Huang.total +
-                          familyDetails.HM.shared.total / 2
+                        familyDetails.HM.shared.total
                       ).toLocaleString()}
                     </span>
                   </div>
-                  <div className="flex justify-between text-xs font-bold text-stone-500">
-                    <span>馬國郡 總負擔</span>
-                    <span className="text-stone-700">
-                      $
-                      {Math.round(
-                        familyDetails.HM.Ma.total +
-                          familyDetails.HM.shared.total / 2
-                      ).toLocaleString()}
-                    </span>
+
+                  <div className="flex gap-2">
+                    <div className="bg-white p-3 rounded-2xl shadow-sm border border-stone-100 flex-1 flex flex-col justify-between">
+                      <span className="text-xs font-bold text-blue-600 mb-1 flex items-center gap-1">
+                        <User className="w-3 h-3" /> 子庭個人
+                      </span>
+                      <span className="font-black text-lg text-blue-900">
+                        $
+                        {Math.round(
+                          familyDetails.HM.Huang.total
+                        ).toLocaleString()}
+                      </span>
+                    </div>
+                    <div className="bg-white p-3 rounded-2xl shadow-sm border border-stone-100 flex-1 flex flex-col justify-between">
+                      <span className="text-xs font-bold text-blue-600 mb-1 flex items-center gap-1">
+                        <User className="w-3 h-3" /> 國郡個人
+                      </span>
+                      <span className="font-black text-lg text-blue-900">
+                        $
+                        {Math.round(familyDetails.HM.Ma.total).toLocaleString()}
+                      </span>
+                    </div>
                   </div>
                 </div>
 
@@ -1163,7 +1206,6 @@ function ExpenseView({ expenses, setExpenses, currentUser, triggerUndo }) {
                   )}
                 </button>
 
-                {/* ⭐️ 將明細拆分成：家族共同 / 個人A / 個人B */}
                 {expandedFamily === "HM" && (
                   <div className="mt-2 pt-2 border-t border-stone-200 animate-slide-up pb-2">
                     {renderCategoryData(
@@ -1190,25 +1232,25 @@ function ExpenseView({ expenses, setExpenses, currentUser, triggerUndo }) {
 
               {/* === 邱袁家區塊 === */}
               <div
-                className={`p-4 rounded-2xl border transition-all ${
+                className={`p-4 rounded-3xl border transition-all ${
                   isCY
-                    ? "bg-amber-50 border-amber-200 shadow-md ring-2 ring-amber-500/20"
+                    ? "bg-amber-50/50 border-amber-200 shadow-md ring-2 ring-amber-500/20"
                     : "bg-white border-stone-200"
                 }`}
               >
                 <h3
-                  className={`font-black text-lg mb-2 flex items-center justify-between ${
+                  className={`font-black text-xl mb-4 flex items-center justify-between ${
                     isCY ? "text-amber-900" : "text-stone-700"
                   }`}
                 >
                   <span>
                     邱袁家{" "}
-                    <span className="text-[10px] font-bold text-stone-400 ml-1">
+                    <span className="text-[11px] font-bold text-stone-400 ml-1">
                       含樂樂
                     </span>
                   </span>
-                  <span className="text-xl">
-                    ${cyFamilyTotal.toLocaleString()}
+                  <span className="text-2xl">
+                    ${Math.round(cyFamilyTotal).toLocaleString()}
                   </span>
                 </h3>
                 {isCY && (
@@ -1216,26 +1258,51 @@ function ExpenseView({ expenses, setExpenses, currentUser, triggerUndo }) {
                     這是你的家族專區
                   </span>
                 )}
-                <div className="space-y-1.5 mt-2 pt-3 border-t border-stone-200/60">
-                  <div className="flex justify-between text-xs font-bold text-stone-500">
-                    <span>邱靖涵 總負擔</span>
-                    <span className="text-stone-700">
+
+                <div className="space-y-2">
+                  <div className="bg-white p-3 rounded-2xl shadow-sm border border-stone-100 flex justify-between items-center">
+                    <div className="flex flex-col">
+                      <span className="text-xs font-bold text-stone-500 flex items-center gap-1.5">
+                        <Users className="w-3.5 h-3.5" /> 家族共同花費
+                      </span>
+                      <span className="text-[10px] font-medium text-stone-400 mt-0.5">
+                        兩人各分擔 $
+                        {Math.round(
+                          familyDetails.CY.shared.total / 2
+                        ).toLocaleString()}
+                      </span>
+                    </div>
+                    <span className="font-black text-lg text-stone-700">
                       $
                       {Math.round(
-                        familyDetails.CY.Chiu.total +
-                          familyDetails.CY.shared.total / 2
+                        familyDetails.CY.shared.total
                       ).toLocaleString()}
                     </span>
                   </div>
-                  <div className="flex justify-between text-xs font-bold text-stone-500">
-                    <span>袁家駿 總負擔</span>
-                    <span className="text-stone-700">
-                      $
-                      {Math.round(
-                        familyDetails.CY.Yuan.total +
-                          familyDetails.CY.shared.total / 2
-                      ).toLocaleString()}
-                    </span>
+
+                  <div className="flex gap-2">
+                    <div className="bg-white p-3 rounded-2xl shadow-sm border border-stone-100 flex-1 flex flex-col justify-between">
+                      <span className="text-xs font-bold text-amber-600 mb-1 flex items-center gap-1">
+                        <User className="w-3 h-3" /> 靖涵個人
+                      </span>
+                      <span className="font-black text-lg text-amber-900">
+                        $
+                        {Math.round(
+                          familyDetails.CY.Chiu.total
+                        ).toLocaleString()}
+                      </span>
+                    </div>
+                    <div className="bg-white p-3 rounded-2xl shadow-sm border border-stone-100 flex-1 flex flex-col justify-between">
+                      <span className="text-xs font-bold text-amber-600 mb-1 flex items-center gap-1">
+                        <User className="w-3 h-3" /> 家駿個人
+                      </span>
+                      <span className="font-black text-lg text-amber-900">
+                        $
+                        {Math.round(
+                          familyDetails.CY.Yuan.total
+                        ).toLocaleString()}
+                      </span>
+                    </div>
                   </div>
                 </div>
 
@@ -1260,7 +1327,6 @@ function ExpenseView({ expenses, setExpenses, currentUser, triggerUndo }) {
                   )}
                 </button>
 
-                {/* ⭐️ 將明細拆分成：家族共同 / 個人A / 個人B */}
                 {expandedFamily === "CY" && (
                   <div className="mt-2 pt-2 border-t border-stone-200 animate-slide-up pb-2">
                     {renderCategoryData(
@@ -1429,6 +1495,32 @@ function ExpenseView({ expenses, setExpenses, currentUser, triggerUndo }) {
                   })}
                 </div>
               </div>
+
+              {/* ⭐️ 全新：指定個人專屬對象 */}
+              {splitType === "個人專屬" && (
+                <div className="pt-2">
+                  <div className="p-4 bg-purple-50/60 rounded-2xl border border-purple-200 animate-slide-up">
+                    <label className="block text-[10px] font-bold text-purple-700 mb-2 uppercase tracking-widest">
+                      這筆是誰的個人專屬花費？
+                    </label>
+                    <div className="flex gap-2">
+                      {USERS.filter((u) => !u.isChild).map((u) => (
+                        <button
+                          key={u.name}
+                          onClick={() => setPersonalTarget(u.name)}
+                          className={`flex-1 py-2.5 rounded-xl font-bold text-xs border transition-all ${
+                            personalTarget === u.name
+                              ? "bg-purple-600 text-white shadow-sm border-purple-600"
+                              : "bg-white text-purple-600 border-purple-200 hover:bg-purple-100"
+                          }`}
+                        >
+                          {u.name}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
 
               {/* 包含專屬費用 Toggle 區塊 */}
               <div className="pt-2 border-t border-stone-100">
@@ -1676,20 +1768,17 @@ function PackingListView({
   const handleAddRecommended = (itemStr) => {
     const oldItems = [...packingItems];
     const oldRecommended = [...recommendedItems];
-
     setPackingItems([
       ...packingItems,
       { id: Date.now(), name: itemStr, checkedHM: false, checkedCY: false },
     ]);
     setRecommendedItems((prev) => prev.filter((i) => i !== itemStr));
-
     triggerUndo(`已新增推薦項目`, () => {
       setPackingItems(oldItems);
       setRecommendedItems(oldRecommended);
     });
   };
 
-  // 行李清單的修改儲存
   const handleSaveEdit = (id) => {
     if (!editName.trim()) {
       setEditingId(null);
