@@ -39,6 +39,9 @@ import {
   Edit3,
   Check,
   PieChart,
+  Tag,
+  Pencil,
+  CalendarClock,
 } from "lucide-react";
 
 // ==========================================
@@ -100,6 +103,19 @@ const getSplitIndividuals = (type, payerName, personalTarget) => {
   return [type];
 };
 
+// 格式化日期給 input type="datetime-local" 使用
+const formatForInput = (isoString) => {
+  if (!isoString) return new Date().toISOString().slice(0, 16);
+  try {
+    const d = new Date(isoString);
+    if (isNaN(d.getTime())) return new Date().toISOString().slice(0, 16);
+    const offset = d.getTimezoneOffset() * 60000;
+    return new Date(d.getTime() - offset).toISOString().slice(0, 16);
+  } catch (e) {
+    return new Date().toISOString().slice(0, 16);
+  }
+};
+
 // ==========================================
 // 🚀 主應用程式元件
 // ==========================================
@@ -114,7 +130,6 @@ export default function App() {
   const [showCalculator, setShowCalculator] = useState(false);
   const [undoNotification, setUndoNotification] = useState(null);
 
-  // 雲端資料狀態
   const [authUser, setAuthUser] = useState(null);
   const [expenses, setExpenses] = useState([]);
   const [packingItems, setPackingItems] = useState([]);
@@ -125,7 +140,6 @@ export default function App() {
     "🧥 防風保暖外套 (海風大)",
   ]);
 
-  // 初始化 Firebase 登入與即時監聽
   useEffect(() => {
     const initAuth = async () => {
       try {
@@ -141,7 +155,6 @@ export default function App() {
 
   useEffect(() => {
     if (!authUser) return;
-
     const unsubExpenses = onSnapshot(
       collection(db, "artifacts", PROJECT_ID, "expenses"),
       (snapshot) => {
@@ -149,11 +162,9 @@ export default function App() {
           id: d.id,
           ...d.data(),
         }));
-        loadedExpenses.sort((a, b) => new Date(b.date) - new Date(a.date));
         setExpenses(loadedExpenses);
       }
     );
-
     const unsubPacking = onSnapshot(
       collection(db, "artifacts", PROJECT_ID, "packingItems"),
       (snapshot) => {
@@ -165,7 +176,6 @@ export default function App() {
         setPackingItems(loadedItems);
       }
     );
-
     return () => {
       unsubExpenses();
       unsubPacking();
@@ -176,7 +186,6 @@ export default function App() {
     setCurrentUser(name);
     localStorage.setItem("busan_trip_user", name);
   };
-
   const handleLogout = () => {
     setCurrentUser(null);
     localStorage.removeItem("busan_trip_user");
@@ -198,7 +207,6 @@ export default function App() {
     }
   };
 
-  // --- 雲端操作函式 (記帳) ---
   const addExpense = async (data) => {
     const docId = Date.now().toString();
     await setDoc(doc(db, "artifacts", PROJECT_ID, "expenses", docId), {
@@ -253,7 +261,6 @@ export default function App() {
     );
   };
 
-  // --- 雲端操作函式 (行李) ---
   const addPackingItem = async (name) => {
     const docId = Date.now().toString();
     await setDoc(doc(db, "artifacts", PROJECT_ID, "packingItems", docId), {
@@ -335,7 +342,6 @@ export default function App() {
   return (
     <div className="min-h-screen bg-stone-100 max-w-md mx-auto relative font-sans overflow-x-hidden text-stone-800 antialiased shadow-2xl">
       <style>{` ::-webkit-scrollbar { display: none; } html { -ms-overflow-style: none; scrollbar-width: none; } @keyframes slide-up { from { transform: translateY(10%); opacity: 0; } to { transform: translateY(0); opacity: 1; } } .animate-slide-up { animation: slide-up 0.3s cubic-bezier(0.16, 1, 0.3, 1); } `}</style>
-
       {undoNotification && (
         <div className="fixed bottom-28 left-1/2 -translate-x-1/2 z-[99999] bg-stone-800/95 backdrop-blur-md text-white px-5 py-3.5 rounded-2xl shadow-2xl flex items-center justify-between gap-4 animate-slide-up w-11/12 max-w-sm border border-stone-700">
           <span className="flex-1 text-sm font-medium truncate">
@@ -349,7 +355,6 @@ export default function App() {
           </button>
         </div>
       )}
-
       <header className="bg-stone-900 text-white pt-12 pb-5 px-6 rounded-b-[2rem] shadow-lg z-10 flex-shrink-0 relative">
         <div className="flex justify-between items-center mb-1 relative z-10">
           <div>
@@ -429,7 +434,6 @@ export default function App() {
           </span>
         </button>
       </nav>
-
       {showCalculator && (
         <QuickCalculatorModal onClose={() => setShowCalculator(false)} />
       )}
@@ -522,10 +526,13 @@ function ExpenseView({
   const [showFamilyCostModal, setShowFamilyCostModal] = useState(false);
   const [showSettledHistory, setShowSettledHistory] = useState(false);
   const [expandedFamily, setExpandedFamily] = useState(null);
+  const [sortMode, setSortMode] = useState("time"); // 'time' 或 'category'
 
   const [editingId, setEditingId] = useState(null);
+  const [expenseDate, setExpenseDate] = useState(""); // 新增：日期時間狀態
   const [title, setTitle] = useState("");
   const [category, setCategory] = useState("飲食");
+  const [customCategory, setCustomCategory] = useState("");
   const [amountTWD, setAmountTWD] = useState("");
   const [amountKRW, setAmountKRW] = useState("");
   const [payer, setPayer] = useState(currentUser);
@@ -543,6 +550,27 @@ function ExpenseView({
     (sum, exp) => sum + exp.amountTWD,
     0
   );
+
+  // 排序邏輯：根據時間或類別
+  const sortedPendingExpenses = useMemo(() => {
+    return [...pendingExpenses].sort((a, b) => {
+      if (sortMode === "category") {
+        const catCompare = (a.category || "").localeCompare(b.category || "");
+        if (catCompare !== 0) return catCompare;
+      }
+      return new Date(b.date) - new Date(a.date);
+    });
+  }, [pendingExpenses, sortMode]);
+
+  const sortedSettledExpenses = useMemo(() => {
+    return [...settledExpenses].sort((a, b) => {
+      if (sortMode === "category") {
+        const catCompare = (a.category || "").localeCompare(b.category || "");
+        if (catCompare !== 0) return catCompare;
+      }
+      return new Date(b.date) - new Date(a.date);
+    });
+  }, [settledExpenses, sortMode]);
 
   const personalCosts = useMemo(() => {
     const costs = { 黃子庭: 0, 馬國郡: 0, 邱靖涵: 0, 袁家駿: 0 };
@@ -576,103 +604,62 @@ function ExpenseView({
   }, [pendingExpenses]);
 
   const familyDetails = useMemo(() => {
-    const initCats = () =>
-      CATEGORIES.reduce(
-        (acc, c) => ({ ...acc, [c.name]: { total: 0, items: [] } }),
-        {}
-      );
+    const initData = () => ({ total: 0, categories: {} });
     const result = {
-      HM: {
-        total: 0,
-        shared: { total: 0, categories: initCats() },
-        Huang: { total: 0, categories: initCats() },
-        Ma: { total: 0, categories: initCats() },
-      },
-      CY: {
-        total: 0,
-        shared: { total: 0, categories: initCats() },
-        Chiu: { total: 0, categories: initCats() },
-        Yuan: { total: 0, categories: initCats() },
-      },
+      HM: { total: 0, shared: initData(), Huang: initData(), Ma: initData() },
+      CY: { total: 0, shared: initData(), Chiu: initData(), Yuan: initData() },
     };
 
     expenses.forEach((exp) => {
       let mainAmount = exp.amountTWD;
-      const cat = exp.category || "飲食";
+      const cat = exp.category || "其他";
 
       const addAmountToData = (targets, amount, label) => {
         if (amount <= 0) return;
         const perPerson = amount / targets.length;
-
-        const hmTargets = targets.filter((t) =>
-          ["黃子庭", "馬國郡"].includes(t)
-        );
-        if (hmTargets.length > 0) {
-          const hmTotal = perPerson * hmTargets.length;
-          result.HM.total += hmTotal;
-          if (hmTargets.length === 2 || targets.length === 4) {
-            result.HM.shared.total += hmTotal;
-            result.HM.shared.categories[cat].total += hmTotal;
-            result.HM.shared.categories[cat].items.push({
+        const processFamily = (fKey, members, pMap) => {
+          const fTargets = targets.filter((t) => members.includes(t));
+          if (fTargets.length > 0) {
+            const fTotal = perPerson * fTargets.length;
+            result[fKey].total += fTotal;
+            const targetData =
+              fTargets.length === members.length || targets.length === 4
+                ? result[fKey].shared
+                : result[fKey][pMap[fTargets[0]]];
+            targetData.total += fTotal;
+            if (!targetData.categories[cat])
+              targetData.categories[cat] = { total: 0, items: [] };
+            targetData.categories[cat].total += fTotal;
+            targetData.categories[cat].items.push({
               title: exp.title + label,
-              amount: hmTotal,
-            });
-          } else {
-            const p = hmTargets[0];
-            const pData = p === "黃子庭" ? result.HM.Huang : result.HM.Ma;
-            pData.total += hmTotal;
-            pData.categories[cat].total += hmTotal;
-            pData.categories[cat].items.push({
-              title: exp.title + label,
-              amount: hmTotal,
+              amount: fTotal,
             });
           }
-        }
-
-        const cyTargets = targets.filter((t) =>
-          ["邱靖涵", "袁家駿"].includes(t)
-        );
-        if (cyTargets.length > 0) {
-          const cyTotal = perPerson * cyTargets.length;
-          result.CY.total += cyTotal;
-          if (cyTargets.length === 2 || targets.length === 4) {
-            result.CY.shared.total += cyTotal;
-            result.CY.shared.categories[cat].total += cyTotal;
-            result.CY.shared.categories[cat].items.push({
-              title: exp.title + label,
-              amount: cyTotal,
-            });
-          } else {
-            const p = cyTargets[0];
-            const pData = p === "邱靖涵" ? result.CY.Chiu : result.CY.Yuan;
-            pData.total += cyTotal;
-            pData.categories[cat].total += cyTotal;
-            pData.categories[cat].items.push({
-              title: exp.title + label,
-              amount: cyTotal,
-            });
-          }
-        }
+        };
+        processFamily("HM", ["黃子庭", "馬國郡"], {
+          黃子庭: "Huang",
+          馬國郡: "Ma",
+        });
+        processFamily("CY", ["邱靖涵", "袁家駿"], {
+          邱靖涵: "Chiu",
+          袁家駿: "Yuan",
+        });
       };
 
       if (exp.extra) {
         mainAmount -= exp.extra.amountTWD;
-        const extraTargets = getSplitIndividuals(
-          exp.extra.target,
-          exp.payer,
-          null
+        addAmountToData(
+          getSplitIndividuals(exp.extra.target, exp.payer, null),
+          exp.extra.amountTWD,
+          " (專屬)"
         );
-        addAmountToData(extraTargets, exp.extra.amountTWD, " (專屬)");
       }
-
-      const mainTargets = getSplitIndividuals(
-        exp.splitType,
-        exp.payer,
-        exp.personalTarget
+      addAmountToData(
+        getSplitIndividuals(exp.splitType, exp.payer, exp.personalTarget),
+        mainAmount,
+        ""
       );
-      addAmountToData(mainTargets, mainAmount, "");
     });
-
     return result;
   }, [expenses]);
 
@@ -694,8 +681,8 @@ function ExpenseView({
           null
         );
         const extraPerPerson = exp.extra.amountTWD / extraTargets.length;
-        extraTargets.forEach((person) => {
-          balances[person] -= extraPerPerson;
+        extraTargets.forEach((p) => {
+          balances[p] -= extraPerPerson;
         });
       }
       const mainTargets = getSplitIndividuals(
@@ -705,39 +692,38 @@ function ExpenseView({
       );
       if (mainTargets.length > 0) {
         const mainPerPerson = mainAmount / mainTargets.length;
-        mainTargets.forEach((person) => {
-          balances[person] -= mainPerPerson;
+        mainTargets.forEach((p) => {
+          balances[p] -= mainPerPerson;
         });
       }
     });
-
     let debtors = [];
     let creditors = [];
-    for (let person in balances) {
-      if (balances[person] < -0.1)
-        debtors.push({ name: person, amount: Math.abs(balances[person]) });
-      else if (balances[person] > 0.1)
-        creditors.push({ name: person, amount: balances[person] });
+    for (let p in balances) {
+      if (balances[p] < -0.1)
+        debtors.push({ name: p, amount: Math.abs(balances[p]) });
+      else if (balances[p] > 0.1)
+        creditors.push({ name: p, amount: balances[p] });
     }
     debtors.sort((a, b) => b.amount - a.amount);
     creditors.sort((a, b) => b.amount - a.amount);
-    const transactions = [];
+    const ts = [];
     let i = 0,
       j = 0;
     while (i < debtors.length && j < creditors.length) {
-      let amount = Math.min(debtors[i].amount, creditors[j].amount);
-      if (amount > 0)
-        transactions.push({
+      let amt = Math.min(debtors[i].amount, creditors[j].amount);
+      if (amt > 0)
+        ts.push({
           from: debtors[i].name,
           to: creditors[j].name,
-          amount: Math.round(amount),
+          amount: Math.round(amt),
         });
-      debtors[i].amount -= amount;
-      creditors[j].amount -= amount;
+      debtors[i].amount -= amt;
+      creditors[j].amount -= amt;
       if (debtors[i].amount < 0.1) i++;
       if (creditors[j].amount < 0.1) j++;
     }
-    return transactions;
+    return ts;
   };
 
   const handleTWDChange = (e) => {
@@ -777,12 +763,6 @@ function ExpenseView({
     else setExtraAmountTWD("");
   };
 
-  const isExtraInvalid =
-    hasExtra &&
-    extraAmountTWD &&
-    amountTWD &&
-    parseFloat(extraAmountTWD) >= parseFloat(amountTWD);
-
   const handleAddClick = () => {
     setEditingId(null);
     setTitle("");
@@ -791,22 +771,33 @@ function ExpenseView({
     setSplitType("大家共同");
     setPayer(currentUser);
     setPersonalTarget(currentUser);
+    setCategory("飲食");
+    setCustomCategory("");
     setHasExtra(false);
     setExtraTarget("邱袁共同");
     setExtraAmountKRW("");
     setExtraAmountTWD("");
+    setExpenseDate(formatForInput(new Date().toISOString())); // 設定為現在時間
     setShowAddExpense(true);
   };
 
   const handleEditClick = (exp) => {
     setEditingId(exp.id);
     setTitle(exp.title);
-    setCategory(exp.category);
     setAmountTWD(exp.amountTWD.toString());
     setAmountKRW(exp.amountKRW.toString());
     setPayer(exp.payer);
     setSplitType(exp.splitType);
     setPersonalTarget(exp.personalTarget || exp.payer);
+    setExpenseDate(formatForInput(exp.date)); // 載入舊的時間
+    const isStandard = CATEGORIES.some((c) => c.name === exp.category);
+    if (isStandard) {
+      setCategory(exp.category);
+      setCustomCategory("");
+    } else {
+      setCategory("自定義");
+      setCustomCategory(exp.category);
+    }
     if (exp.extra) {
       setHasExtra(true);
       setExtraTarget(exp.extra.target);
@@ -821,7 +812,9 @@ function ExpenseView({
   };
 
   const handleSubmitExpense = () => {
-    if (!title || (!amountTWD && !amountKRW) || isExtraInvalid) return;
+    if (!title || (!amountTWD && !amountKRW)) return;
+    const finalCategory =
+      category === "自定義" ? customCategory.trim() || "其他" : category;
     let extraData = null;
     if (hasExtra && extraAmountTWD && parseFloat(extraAmountTWD) > 0) {
       extraData = {
@@ -830,28 +823,34 @@ function ExpenseView({
         amountKRW: parseFloat(extraAmountKRW),
       };
     }
+    const finalDateStr = expenseDate
+      ? new Date(expenseDate).toISOString()
+      : new Date().toISOString();
+
     const expenseData = {
       payer,
       title,
-      category,
+      category: finalCategory,
       amountTWD: parseFloat(amountTWD || 0),
       amountKRW: parseFloat(amountKRW || 0),
       splitType,
       personalTarget: splitType === "個人專屬" ? personalTarget : null,
       extra: extraData,
-      date: new Date().toISOString(),
+      date: finalDateStr,
       isSettled: false,
     };
-
-    if (editingId) {
-      onUpdateExpense(editingId, expenseData);
-    } else {
-      onAddExpense(expenseData);
-    }
+    if (editingId) onUpdateExpense(editingId, expenseData);
+    else onAddExpense(expenseData);
     setShowAddExpense(false);
   };
 
-  const renderCategoryData = (data, titleText, IconComp, colorClass) => {
+  const isExtraInvalid =
+    hasExtra &&
+    extraAmountTWD &&
+    amountTWD &&
+    parseFloat(extraAmountTWD) >= parseFloat(amountTWD);
+
+  const renderCategoryDetail = (data, titleText, IconComp, colorClass) => {
     if (data.total === 0) return null;
     return (
       <div className="mt-4">
@@ -864,18 +863,17 @@ function ExpenseView({
           </span>
         </h5>
         <div className="space-y-2 pl-2 border-l-[3px] border-stone-100/80 ml-2.5">
-          {CATEGORIES.map((c) => {
-            const catData = data.categories[c.name];
-            if (!catData || catData.total === 0) return null;
-            const CatIcon = c.icon;
+          {Object.entries(data.categories).map(([catName, catData]) => {
+            const standardCat = CATEGORIES.find((c) => c.name === catName);
+            const CatIcon = standardCat ? standardCat.icon : Tag;
             return (
               <div
-                key={c.name}
+                key={catName}
                 className="bg-white rounded-xl p-3 border border-stone-100 shadow-sm ml-2"
               >
                 <h4 className="flex items-center justify-between text-[11px] font-black text-stone-600 mb-2 pb-2 border-b border-stone-50">
                   <span className="flex items-center gap-1.5">
-                    <CatIcon className="w-3.5 h-3.5 text-stone-400" /> {c.name}
+                    <CatIcon className="w-3.5 h-3.5 text-stone-400" /> {catName}
                   </span>
                   <span className="text-stone-700">
                     ${Math.round(catData.total).toLocaleString()}
@@ -934,20 +932,19 @@ function ExpenseView({
             </button>
           </div>
         </div>
-
         <div className="bg-stone-800/50 rounded-2xl p-4 border border-stone-700/50 relative z-10">
           <p className="text-[10px] text-stone-400 font-bold uppercase tracking-widest mb-3 flex items-center gap-1.5">
             <User className="w-3 h-3" /> 目前每人各自應付
           </p>
           <div className="grid grid-cols-2 gap-3">
-            {Object.entries(personalCosts).map(([name, cost]) => (
+            {Object.entries(personalCosts).map(([n, c]) => (
               <div
-                key={name}
+                key={n}
                 className="flex justify-between items-center bg-stone-800/80 px-3 py-2 rounded-lg"
               >
-                <span className="text-xs font-bold text-stone-300">{name}</span>
+                <span className="text-xs font-bold text-stone-300">{n}</span>
                 <span className="text-sm font-black text-white">
-                  ${Math.round(cost).toLocaleString()}
+                  ${Math.round(c).toLocaleString()}
                 </span>
               </div>
             ))}
@@ -955,20 +952,47 @@ function ExpenseView({
         </div>
       </div>
 
-      <div className="flex justify-between items-center mb-4 px-1">
-        <h3 className="font-black text-stone-800 text-lg tracking-tight">
-          待結算明細
-        </h3>
+      {/* ⭐️ 新增：排序切換區塊 */}
+      <div className="flex justify-between items-end mb-4 px-1">
+        <div>
+          <h3 className="font-black text-stone-800 text-lg tracking-tight mb-2">
+            待結算明細
+          </h3>
+          <div className="flex bg-stone-200/50 p-1 rounded-lg w-fit">
+            <button
+              onClick={() => setSortMode("time")}
+              className={`px-3 py-1.5 rounded-md text-[10px] font-bold transition-all flex items-center gap-1 ${
+                sortMode === "time"
+                  ? "bg-white shadow-sm text-stone-800"
+                  : "text-stone-400 hover:text-stone-600"
+              }`}
+            >
+              <CalendarClock className="w-3 h-3" />
+              時間排序
+            </button>
+            <button
+              onClick={() => setSortMode("category")}
+              className={`px-3 py-1.5 rounded-md text-[10px] font-bold transition-all flex items-center gap-1 ${
+                sortMode === "category"
+                  ? "bg-white shadow-sm text-stone-800"
+                  : "text-stone-400 hover:text-stone-600"
+              }`}
+            >
+              <Tag className="w-3 h-3" />
+              類別分類
+            </button>
+          </div>
+        </div>
         <button
           onClick={handleAddClick}
-          className="bg-stone-900 text-white p-2.5 px-4 rounded-full shadow-md hover:bg-stone-800 transition-all flex items-center gap-1 text-xs font-bold active:scale-95"
+          className="bg-stone-900 text-white p-2.5 px-4 rounded-full shadow-md hover:bg-stone-800 transition-all flex items-center gap-1 text-xs font-bold active:scale-95 mb-1"
         >
           <Plus className="w-4 h-4" /> 記一筆
         </button>
       </div>
 
       <div className="space-y-3 mb-8">
-        {pendingExpenses.length === 0 ? (
+        {sortedPendingExpenses.length === 0 ? (
           <div className="text-center py-10 bg-white rounded-[1.5rem] border border-stone-200 border-dashed">
             <CheckCircle
               className="w-10 h-10 mx-auto mb-2 text-emerald-300"
@@ -979,11 +1003,9 @@ function ExpenseView({
             </p>
           </div>
         ) : (
-          pendingExpenses.map((exp) => {
-            const catInfo =
-              CATEGORIES.find((c) => c.name === exp.category) || CATEGORIES[0];
-            const CatIcon = catInfo.icon;
-
+          sortedPendingExpenses.map((exp) => {
+            const standardCat = CATEGORIES.find((c) => c.name === exp.category);
+            const CatIcon = standardCat ? standardCat.icon : Tag;
             let badgeColor = "bg-stone-100 text-stone-500";
             let badgeText = exp.splitType;
             if (exp.splitType === "黃馬共同")
@@ -997,6 +1019,17 @@ function ExpenseView({
                 "bg-purple-50 text-purple-600 border border-purple-100";
               badgeText = `${exp.personalTarget || exp.payer} 個人`;
             }
+
+            const dateObj = new Date(exp.date);
+            const dateStr = !isNaN(dateObj)
+              ? `${dateObj.getMonth() + 1}/${dateObj.getDate()} ${dateObj
+                  .getHours()
+                  .toString()
+                  .padStart(2, "0")}:${dateObj
+                  .getMinutes()
+                  .toString()
+                  .padStart(2, "0")}`
+              : "";
 
             return (
               <div
@@ -1018,9 +1051,14 @@ function ExpenseView({
                     />
                   </div>
                   <div className="overflow-hidden w-full">
-                    <h4 className="font-bold text-stone-800 text-sm mb-1 truncate pr-2">
+                    <h4 className="font-bold text-stone-800 text-sm mb-0.5 truncate pr-2">
                       {exp.title}
                     </h4>
+                    {dateStr && (
+                      <span className="text-[9px] text-stone-400 font-bold block mb-1.5">
+                        {dateStr}
+                      </span>
+                    )}
                     <div className="flex items-center gap-1.5 flex-wrap">
                       <span className="text-[10px] bg-stone-100 text-stone-500 px-1.5 py-0.5 rounded font-bold">
                         {exp.payer} 墊付
@@ -1065,7 +1103,7 @@ function ExpenseView({
         )}
       </div>
 
-      {settledExpenses.length > 0 && (
+      {sortedSettledExpenses.length > 0 && (
         <div className="mt-8 border-t border-stone-200 pt-6">
           <button
             onClick={() => setShowSettledHistory(!showSettledHistory)}
@@ -1073,7 +1111,7 @@ function ExpenseView({
           >
             <h3 className="font-bold text-sm tracking-tight flex items-center gap-2">
               <CheckCircle2 className="w-4 h-4 text-emerald-500" />{" "}
-              已結清歷史紀錄 ({settledExpenses.length})
+              已結清歷史紀錄 ({sortedSettledExpenses.length})
             </h3>
             {showSettledHistory ? (
               <ChevronUp className="w-4 h-4" />
@@ -1083,11 +1121,22 @@ function ExpenseView({
           </button>
           {showSettledHistory && (
             <div className="space-y-3 mt-4 animate-in slide-in-from-top-4 opacity-70 hover:opacity-100 transition-opacity">
-              {settledExpenses.map((exp) => {
-                const catInfo =
-                  CATEGORIES.find((c) => c.name === exp.category) ||
-                  CATEGORIES[0];
-                const CatIcon = catInfo.icon;
+              {sortedSettledExpenses.map((exp) => {
+                const standardCat = CATEGORIES.find(
+                  (c) => c.name === exp.category
+                );
+                const CatIcon = standardCat ? standardCat.icon : Tag;
+                const dateObj = new Date(exp.date);
+                const dateStr = !isNaN(dateObj)
+                  ? `${dateObj.getMonth() + 1}/${dateObj.getDate()} ${dateObj
+                      .getHours()
+                      .toString()
+                      .padStart(2, "0")}:${dateObj
+                      .getMinutes()
+                      .toString()
+                      .padStart(2, "0")}`
+                  : "";
+
                 return (
                   <div
                     key={exp.id}
@@ -1108,9 +1157,14 @@ function ExpenseView({
                         />
                       </div>
                       <div className="flex-1">
-                        <h4 className="font-bold text-stone-600 text-xs mb-1 line-through">
+                        <h4 className="font-bold text-stone-600 text-xs mb-0.5 line-through">
                           {exp.title}
                         </h4>
+                        {dateStr && (
+                          <span className="text-[8px] text-stone-400 font-bold block mb-1">
+                            {dateStr}
+                          </span>
+                        )}
                         <div className="flex items-center gap-1.5 flex-wrap">
                           <span className="text-[9px] text-stone-400 font-bold">
                             ${exp.amountTWD.toLocaleString()}
@@ -1166,9 +1220,7 @@ function ExpenseView({
                 查看各自家族需負擔的所有花費 (含已結清)
               </p>
             </div>
-
             <div className="p-6 bg-stone-50 space-y-5">
-              {/* === 黃馬家區塊 === */}
               <div
                 className={`p-4 rounded-3xl border transition-all ${
                   isHM
@@ -1191,23 +1243,11 @@ function ExpenseView({
                     ${Math.round(hmFamilyTotal).toLocaleString()}
                   </span>
                 </h3>
-                {isHM && (
-                  <span className="inline-block text-[10px] bg-blue-600 text-white px-2 py-0.5 rounded-md mb-3 font-bold">
-                    這是你的家族專區
-                  </span>
-                )}
-
                 <div className="space-y-2">
                   <div className="bg-white p-3 rounded-2xl shadow-sm border border-stone-100 flex justify-between items-center">
                     <div className="flex flex-col">
                       <span className="text-xs font-bold text-stone-500 flex items-center gap-1.5">
-                        <Users className="w-3.5 h-3.5" /> 家族共同花費
-                      </span>
-                      <span className="text-[10px] font-medium text-stone-400 mt-0.5">
-                        兩人各分擔 $
-                        {Math.round(
-                          familyDetails.HM.shared.total / 2
-                        ).toLocaleString()}
+                        <Users className="w-3.5 h-3.5" /> 共同分擔
                       </span>
                     </div>
                     <span className="font-black text-lg text-stone-700">
@@ -1217,11 +1257,10 @@ function ExpenseView({
                       ).toLocaleString()}
                     </span>
                   </div>
-
                   <div className="flex gap-2">
-                    <div className="bg-white p-3 rounded-2xl shadow-sm border border-stone-100 flex-1 flex flex-col justify-between">
-                      <span className="text-xs font-bold text-blue-600 mb-1 flex items-center gap-1">
-                        <User className="w-3 h-3" /> 子庭個人
+                    <div className="bg-white p-3 rounded-2xl border flex-1 flex flex-col">
+                      <span className="text-xs font-bold text-blue-600 mb-1">
+                        子庭個人
                       </span>
                       <span className="font-black text-lg text-blue-900">
                         $
@@ -1230,9 +1269,9 @@ function ExpenseView({
                         ).toLocaleString()}
                       </span>
                     </div>
-                    <div className="bg-white p-3 rounded-2xl shadow-sm border border-stone-100 flex-1 flex flex-col justify-between">
-                      <span className="text-xs font-bold text-blue-600 mb-1 flex items-center gap-1">
-                        <User className="w-3 h-3" /> 國郡個人
+                    <div className="bg-white p-3 rounded-2xl border flex-1 flex flex-col">
+                      <span className="text-xs font-bold text-blue-600 mb-1">
+                        國郡個人
                       </span>
                       <span className="font-black text-lg text-blue-900">
                         $
@@ -1241,53 +1280,42 @@ function ExpenseView({
                     </div>
                   </div>
                 </div>
-
                 <button
                   onClick={() =>
                     setExpandedFamily(expandedFamily === "HM" ? null : "HM")
                   }
-                  className={`w-full mt-4 py-2.5 bg-white rounded-xl border text-xs font-bold flex items-center justify-center gap-1.5 transition-colors active:scale-95 ${
-                    expandedFamily === "HM"
-                      ? "border-stone-300 text-stone-500"
-                      : "border-blue-200 text-blue-600 hover:bg-blue-100"
-                  }`}
+                  className="w-full mt-4 py-2.5 bg-white rounded-xl border text-xs font-bold flex items-center justify-center gap-1.5 transition-colors"
                 >
-                  <PieChart className="w-3.5 h-3.5" />{" "}
-                  {expandedFamily === "HM"
-                    ? "收起詳細拆帳分類"
-                    : "展開詳細拆帳分類"}
+                  {expandedFamily === "HM" ? "收起詳細" : "展開詳細"}
                   {expandedFamily === "HM" ? (
                     <ChevronUp className="w-3.5 h-3.5" />
                   ) : (
                     <ChevronDown className="w-3.5 h-3.5" />
                   )}
                 </button>
-
                 {expandedFamily === "HM" && (
                   <div className="mt-2 pt-2 border-t border-stone-200 animate-slide-up pb-2">
-                    {renderCategoryData(
+                    {renderCategoryDetail(
                       familyDetails.HM.shared,
-                      "👨‍👩‍👦 黃馬家 共同花費",
+                      "👨‍👩‍👦 家族共同",
                       Users,
                       "text-stone-700"
                     )}
-                    {renderCategoryData(
+                    {renderCategoryDetail(
                       familyDetails.HM.Huang,
-                      "🧑 黃子庭 個人專屬",
+                      "🧑 子庭專屬",
                       User,
                       "text-blue-700"
                     )}
-                    {renderCategoryData(
+                    {renderCategoryDetail(
                       familyDetails.HM.Ma,
-                      "🧑 馬國郡 個人專屬",
+                      "🧑 國郡專屬",
                       User,
                       "text-blue-700"
                     )}
                   </div>
                 )}
               </div>
-
-              {/* === 邱袁家區塊 === */}
               <div
                 className={`p-4 rounded-3xl border transition-all ${
                   isCY
@@ -1310,23 +1338,11 @@ function ExpenseView({
                     ${Math.round(cyFamilyTotal).toLocaleString()}
                   </span>
                 </h3>
-                {isCY && (
-                  <span className="inline-block text-[10px] bg-amber-500 text-white px-2 py-0.5 rounded-md mb-3 font-bold">
-                    這是你的家族專區
-                  </span>
-                )}
-
                 <div className="space-y-2">
                   <div className="bg-white p-3 rounded-2xl shadow-sm border border-stone-100 flex justify-between items-center">
                     <div className="flex flex-col">
                       <span className="text-xs font-bold text-stone-500 flex items-center gap-1.5">
-                        <Users className="w-3.5 h-3.5" /> 家族共同花費
-                      </span>
-                      <span className="text-[10px] font-medium text-stone-400 mt-0.5">
-                        兩人各分擔 $
-                        {Math.round(
-                          familyDetails.CY.shared.total / 2
-                        ).toLocaleString()}
+                        <Users className="w-3.5 h-3.5" /> 共同分擔
                       </span>
                     </div>
                     <span className="font-black text-lg text-stone-700">
@@ -1336,11 +1352,10 @@ function ExpenseView({
                       ).toLocaleString()}
                     </span>
                   </div>
-
                   <div className="flex gap-2">
-                    <div className="bg-white p-3 rounded-2xl shadow-sm border border-stone-100 flex-1 flex flex-col justify-between">
-                      <span className="text-xs font-bold text-amber-600 mb-1 flex items-center gap-1">
-                        <User className="w-3 h-3" /> 靖涵個人
+                    <div className="bg-white p-3 rounded-2xl border flex-1 flex flex-col">
+                      <span className="text-xs font-bold text-amber-600 mb-1">
+                        靖涵個人
                       </span>
                       <span className="font-black text-lg text-amber-900">
                         $
@@ -1349,9 +1364,9 @@ function ExpenseView({
                         ).toLocaleString()}
                       </span>
                     </div>
-                    <div className="bg-white p-3 rounded-2xl shadow-sm border border-stone-100 flex-1 flex flex-col justify-between">
-                      <span className="text-xs font-bold text-amber-600 mb-1 flex items-center gap-1">
-                        <User className="w-3 h-3" /> 家駿個人
+                    <div className="bg-white p-3 rounded-2xl border flex-1 flex flex-col">
+                      <span className="text-xs font-bold text-amber-600 mb-1">
+                        家駿個人
                       </span>
                       <span className="font-black text-lg text-amber-900">
                         $
@@ -1362,55 +1377,45 @@ function ExpenseView({
                     </div>
                   </div>
                 </div>
-
                 <button
                   onClick={() =>
                     setExpandedFamily(expandedFamily === "CY" ? null : "CY")
                   }
-                  className={`w-full mt-4 py-2.5 bg-white rounded-xl border text-xs font-bold flex items-center justify-center gap-1.5 transition-colors active:scale-95 ${
-                    expandedFamily === "CY"
-                      ? "border-stone-300 text-stone-500"
-                      : "border-amber-200 text-amber-600 hover:bg-amber-100"
-                  }`}
+                  className="w-full mt-4 py-2.5 bg-white rounded-xl border text-xs font-bold flex items-center justify-center gap-1.5 transition-colors"
                 >
-                  <PieChart className="w-3.5 h-3.5" />{" "}
-                  {expandedFamily === "CY"
-                    ? "收起詳細拆帳分類"
-                    : "展開詳細拆帳分類"}
+                  {expandedFamily === "CY" ? "收起詳細" : "展開詳細"}
                   {expandedFamily === "CY" ? (
                     <ChevronUp className="w-3.5 h-3.5" />
                   ) : (
                     <ChevronDown className="w-3.5 h-3.5" />
                   )}
                 </button>
-
                 {expandedFamily === "CY" && (
                   <div className="mt-2 pt-2 border-t border-stone-200 animate-slide-up pb-2">
-                    {renderCategoryData(
+                    {renderCategoryDetail(
                       familyDetails.CY.shared,
-                      "👨‍👩‍👦 邱袁家 共同花費",
+                      "👨‍👩‍👦 家族共同",
                       Users,
                       "text-stone-700"
                     )}
-                    {renderCategoryData(
+                    {renderCategoryDetail(
                       familyDetails.CY.Chiu,
-                      "🧑 邱靖涵 個人專屬",
+                      "🧑 靖涵專屬",
                       User,
                       "text-amber-700"
                     )}
-                    {renderCategoryData(
+                    {renderCategoryDetail(
                       familyDetails.CY.Yuan,
-                      "🧑 袁家駿 個人專屬",
+                      "🧑 家駿專屬",
                       User,
                       "text-amber-700"
                     )}
                   </div>
                 )}
               </div>
-
               <button
                 onClick={() => setShowFamilyCostModal(false)}
-                className="w-full mt-4 py-3.5 bg-stone-200 text-stone-800 rounded-xl font-bold hover:bg-stone-300 transition-colors active:scale-95 sticky bottom-0"
+                className="w-full mt-4 py-3.5 bg-stone-200 text-stone-800 rounded-xl font-bold active:scale-95 sticky bottom-0"
               >
                 關閉
               </button>
@@ -1433,11 +1438,23 @@ function ExpenseView({
                 <span className="font-bold text-sm px-1">✕</span>
               </button>
             </div>
-
             <div className="space-y-6 pb-6">
+              {/* ⭐️ 新增：消費時間選擇 */}
               <div>
                 <label className="block text-[10px] font-bold text-stone-400 mb-2 uppercase tracking-widest">
-                  誰先墊錢的？(Payer)
+                  消費時間
+                </label>
+                <input
+                  type="datetime-local"
+                  value={expenseDate}
+                  onChange={(e) => setExpenseDate(e.target.value)}
+                  className="w-full px-4 py-3.5 bg-stone-50 border border-stone-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-stone-900 font-bold text-stone-800 text-sm"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-bold text-stone-400 mb-2 uppercase tracking-widest">
+                  誰先墊錢的？
                 </label>
                 <div className="flex gap-2">
                   {USERS.filter((u) => !u.isChild).map((u) => (
@@ -1455,7 +1472,6 @@ function ExpenseView({
                   ))}
                 </div>
               </div>
-
               <div>
                 <label className="block text-[10px] font-bold text-stone-400 mb-2 uppercase tracking-widest">
                   花費名稱
@@ -1468,11 +1484,10 @@ function ExpenseView({
                   className="w-full px-4 py-3.5 bg-stone-50 border border-stone-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-stone-900 font-bold text-stone-800 text-sm"
                 />
               </div>
-
               <div className="grid grid-cols-2 gap-3 bg-stone-50 p-4 rounded-2xl border border-stone-200">
                 <div>
                   <label className="block text-[10px] font-bold text-stone-400 mb-2 uppercase tracking-widest">
-                    總金額 韓元 (KRW)
+                    總金額 韓元
                   </label>
                   <div className="relative">
                     <span className="absolute left-3 top-3.5 font-bold text-stone-400">
@@ -1489,7 +1504,7 @@ function ExpenseView({
                 </div>
                 <div>
                   <label className="block text-[10px] font-bold text-stone-400 mb-2 uppercase tracking-widest">
-                    總金額 台幣 (TWD)
+                    總金額 台幣
                   </label>
                   <div className="relative">
                     <span className="absolute left-3 top-3.5 font-bold text-stone-400">
@@ -1508,76 +1523,102 @@ function ExpenseView({
 
               <div>
                 <label className="block text-[10px] font-bold text-stone-400 mb-2 uppercase tracking-widest">
-                  剩餘金額由誰負擔？(Main Split)
+                  分類標籤
                 </label>
-                <div className="grid grid-cols-2 gap-2">
-                  {SPLIT_OPTIONS.map((opt) => {
-                    const OptIcon = opt.icon;
-                    const isActive = splitType === opt.id;
-                    return (
-                      <button
-                        key={opt.id}
-                        onClick={() => setSplitType(opt.id)}
-                        className={`flex items-start gap-2 p-3.5 border rounded-xl transition-all text-left ${
-                          isActive
-                            ? "bg-blue-50 border-blue-200 ring-1 ring-blue-500"
-                            : "bg-white border-stone-200 hover:bg-stone-50"
-                        }`}
-                      >
-                        <OptIcon
-                          className={`w-4 h-4 flex-shrink-0 mt-0.5 ${
-                            isActive ? "text-blue-600" : "text-stone-400"
-                          }`}
-                          strokeWidth={2}
-                        />
-                        <div>
-                          <p
-                            className={`font-bold text-xs leading-tight ${
-                              isActive ? "text-blue-900" : "text-stone-600"
-                            }`}
-                          >
-                            {opt.label}
-                          </p>
-                          <p
-                            className={`text-[9px] mt-1 font-bold ${
-                              isActive ? "text-blue-500" : "text-stone-400"
-                            }`}
-                          >
-                            {opt.desc}
-                          </p>
-                        </div>
-                      </button>
-                    );
-                  })}
+                <div className="flex gap-2 overflow-x-auto pb-2 hide-scrollbar">
+                  {CATEGORIES.map((c) => (
+                    <button
+                      key={c.name}
+                      onClick={() => setCategory(c.name)}
+                      className={`flex-shrink-0 px-4 py-2.5 rounded-xl flex items-center gap-1.5 transition-all font-bold text-xs border ${
+                        category === c.name
+                          ? "bg-stone-900 text-white border-stone-900"
+                          : "bg-white border-stone-200 text-stone-600 hover:bg-stone-50"
+                      }`}
+                    >
+                      <c.icon className="w-3.5 h-3.5" /> {c.name}
+                    </button>
+                  ))}
+                  <button
+                    onClick={() => setCategory("自定義")}
+                    className={`flex-shrink-0 px-4 py-2.5 rounded-xl flex items-center gap-1.5 transition-all font-bold text-xs border ${
+                      category === "自定義"
+                        ? "bg-blue-600 text-white border-blue-600 shadow-md"
+                        : "bg-white border-blue-200 text-blue-600 hover:bg-blue-50"
+                    }`}
+                  >
+                    <Pencil className="w-3.5 h-3.5" /> 自定義
+                  </button>
                 </div>
+                {category === "自定義" && (
+                  <div className="mt-3 animate-slide-up">
+                    <input
+                      type="text"
+                      value={customCategory}
+                      onChange={(e) => setCustomCategory(e.target.value)}
+                      placeholder="請輸入類別名稱，例如：門票、藥妝..."
+                      className="w-full px-4 py-3 bg-blue-50 border border-blue-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 font-bold text-blue-900 text-sm"
+                      autoFocus
+                    />
+                  </div>
+                )}
               </div>
 
-              {/* ⭐️ 全新：指定個人專屬對象 */}
-              {splitType === "個人專屬" && (
-                <div className="pt-2">
-                  <div className="p-4 bg-purple-50/60 rounded-2xl border border-purple-200 animate-slide-up">
-                    <label className="block text-[10px] font-bold text-purple-700 mb-2 uppercase tracking-widest">
-                      這筆是誰的個人專屬花費？
-                    </label>
-                    <div className="flex gap-2">
-                      {USERS.filter((u) => !u.isChild).map((u) => (
-                        <button
-                          key={u.name}
-                          onClick={() => setPersonalTarget(u.name)}
-                          className={`flex-1 py-2.5 rounded-xl font-bold text-xs border transition-all ${
-                            personalTarget === u.name
-                              ? "bg-purple-600 text-white shadow-sm border-purple-600"
-                              : "bg-white text-purple-600 border-purple-200 hover:bg-purple-100"
+              <div>
+                <label className="block text-[10px] font-bold text-stone-400 mb-2 uppercase tracking-widest">
+                  由誰負擔？
+                </label>
+                <div className="grid grid-cols-2 gap-2">
+                  {SPLIT_OPTIONS.map((opt) => (
+                    <button
+                      key={opt.id}
+                      onClick={() => setSplitType(opt.id)}
+                      className={`flex items-start gap-2 p-3.5 border rounded-xl transition-all text-left ${
+                        splitType === opt.id
+                          ? "bg-blue-50 border-blue-200 ring-1 ring-blue-500"
+                          : "bg-white border-stone-200"
+                      }`}
+                    >
+                      <opt.icon
+                        className={`w-4 h-4 mt-0.5 ${
+                          splitType === opt.id
+                            ? "text-blue-600"
+                            : "text-stone-400"
+                        }`}
+                      />
+                      <div>
+                        <p
+                          className={`font-bold text-xs ${
+                            splitType === opt.id
+                              ? "text-blue-900"
+                              : "text-stone-600"
                           }`}
                         >
-                          {u.name}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
+                          {opt.label}
+                        </p>
+                        <p className="text-[9px] text-stone-400">{opt.desc}</p>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+              {splitType === "個人專屬" && (
+                <div className="p-4 bg-purple-50 rounded-2xl border border-purple-200 flex gap-2">
+                  {USERS.filter((u) => !u.isChild).map((u) => (
+                    <button
+                      key={u.name}
+                      onClick={() => setPersonalTarget(u.name)}
+                      className={`flex-1 py-2 rounded-xl font-bold text-xs border ${
+                        personalTarget === u.name
+                          ? "bg-purple-600 text-white"
+                          : "bg-white text-purple-600"
+                      }`}
+                    >
+                      {u.name}
+                    </button>
+                  ))}
                 </div>
               )}
-
               <div className="pt-2 border-t border-stone-100">
                 <button
                   onClick={() => setHasExtra(!hasExtra)}
@@ -1664,36 +1705,10 @@ function ExpenseView({
                   </div>
                 )}
               </div>
-
-              <div>
-                <label className="block text-[10px] font-bold text-stone-400 mb-2 uppercase tracking-widest">
-                  分類標籤
-                </label>
-                <div className="flex gap-2 overflow-x-auto pb-1 hide-scrollbar">
-                  {CATEGORIES.map((c) => {
-                    const Icon = c.icon;
-                    return (
-                      <button
-                        key={c.name}
-                        onClick={() => setCategory(c.name)}
-                        className={`flex-shrink-0 px-4 py-3 rounded-xl flex items-center gap-1.5 transition-all font-bold text-xs border ${
-                          category === c.name
-                            ? "bg-stone-900 text-white border-stone-900"
-                            : "bg-white border-stone-200 text-stone-600 hover:bg-stone-50"
-                        }`}
-                      >
-                        <Icon className="w-3.5 h-3.5" strokeWidth={2} />{" "}
-                        {c.name}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-
               <button
                 onClick={handleSubmitExpense}
                 disabled={!title || !amountTWD || isExtraInvalid}
-                className="w-full py-4 mt-2 bg-stone-900 hover:bg-stone-800 text-white rounded-xl font-bold text-sm disabled:opacity-30 transition-all active:scale-95 flex justify-center items-center shadow-lg"
+                className="w-full py-4 mt-2 bg-stone-900 text-white rounded-xl font-bold text-sm shadow-lg active:scale-95"
               >
                 {editingId ? "儲存修改" : "新增花費"}
               </button>
@@ -1715,13 +1730,10 @@ function ExpenseView({
               <div className="absolute -top-10 -right-10 w-32 h-32 bg-white/5 rounded-full blur-2xl"></div>
               <Receipt className="w-8 h-8 mx-auto mb-3 text-stone-300" />
               <h2 className="text-xl font-black tracking-wide">待轉帳結算單</h2>
-              <p className="text-stone-400 text-xs mt-1 font-medium">
-                系統已自動為您抵銷複雜的代墊款與專屬費用
-              </p>
             </div>
             <div className="p-6 bg-stone-50">
               {calculateSettlement().length === 0 ? (
-                <div className="text-center text-stone-500 font-bold py-6">
+                <div className="text-center font-bold py-6">
                   無待結算帳款！🎉
                 </div>
               ) : (
@@ -1729,7 +1741,7 @@ function ExpenseView({
                   {calculateSettlement().map((t, i) => (
                     <div
                       key={i}
-                      className="bg-white p-4 rounded-2xl border border-stone-200 flex items-center justify-between shadow-sm"
+                      className="bg-white p-4 rounded-2xl border flex items-center justify-between shadow-sm"
                     >
                       <div className="flex items-center gap-3">
                         <span className="font-bold text-stone-700">
@@ -1747,7 +1759,7 @@ function ExpenseView({
               )}
               <button
                 onClick={() => setShowSettlement(false)}
-                className="w-full mt-6 py-3.5 bg-stone-200 text-stone-800 rounded-xl font-bold hover:bg-stone-300 transition-colors active:scale-95"
+                className="w-full mt-6 py-3.5 bg-stone-200 rounded-xl font-bold"
               >
                 我知道了
               </button>
@@ -1773,7 +1785,6 @@ function PackingListView({
   const [newItemName, setNewItemName] = useState("");
   const [editingId, setEditingId] = useState(null);
   const [editName, setEditName] = useState("");
-
   const toggleHM = (id) => {
     const item = packingItems.find((i) => i.id === id);
     onUpdatePackingItem(id, { ...item, checkedHM: !item.checkedHM });
@@ -1800,38 +1811,35 @@ function PackingListView({
     onUpdatePackingItem(id, { ...item, name: editName.trim() });
     setEditingId(null);
   };
-
   return (
     <div className="p-4 pb-10">
       <div className="bg-gradient-to-br from-stone-800 to-stone-900 rounded-[2rem] p-6 text-white mb-6 shadow-lg relative overflow-hidden">
-        <div className="absolute top-0 right-0 w-32 h-32 bg-white/5 rounded-full -translate-y-8 translate-x-8 blur-2xl"></div>
+        <div className="absolute top-0 right-0 w-32 h-32 bg-white/5 rounded-full blur-2xl"></div>
         <h2 className="text-2xl font-black tracking-tight flex items-center gap-2 mb-1">
           <Package className="w-6 h-6 text-stone-400" /> 共同行李清單
         </h2>
         <p className="text-xs text-stone-400 font-medium leading-relaxed">
           輸入各自需要帶的東西。
           <br />
-          右側可分別標記「黃馬家」與「邱袁家」是否準備完成。
+          右側可分別標記是否準備完成。
         </p>
       </div>
-
       <div className="mb-6 flex gap-2">
         <input
           type="text"
           value={newItemName}
           onChange={(e) => setNewItemName(e.target.value)}
-          placeholder="輸入你們想到的必備物品..."
-          className="flex-1 px-4 py-3.5 bg-white border border-stone-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-stone-900 font-bold text-stone-800 text-sm shadow-sm"
+          placeholder="必備物品..."
+          className="flex-1 px-4 py-3.5 bg-white border border-stone-200 rounded-xl font-bold text-stone-800 text-sm shadow-sm"
         />
         <button
           onClick={handleAddCustom}
           disabled={!newItemName.trim()}
-          className="bg-stone-900 text-white px-5 rounded-xl font-bold flex items-center justify-center disabled:opacity-50 transition-all active:scale-95 shadow-sm hover:bg-stone-800"
+          className="bg-stone-900 text-white px-5 rounded-xl font-bold active:scale-95 shadow-sm"
         >
           新增
         </button>
       </div>
-
       <div className="space-y-3 mb-8">
         {packingItems.length === 0 ? (
           <div className="text-center py-10 bg-white rounded-[1.5rem] border border-stone-200 border-dashed">
@@ -1878,9 +1886,7 @@ function PackingListView({
                 <button
                   onClick={() => toggleHM(item.id)}
                   className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border font-bold text-[11px] transition-all ${
-                    item.checkedHM
-                      ? "bg-blue-600 border-blue-600 text-white shadow-sm"
-                      : "bg-stone-50 border-stone-200 text-stone-400 hover:bg-stone-100"
+                    item.checkedHM ? "bg-blue-600 text-white" : "bg-stone-50"
                   }`}
                 >
                   {item.checkedHM ? (
@@ -1893,9 +1899,7 @@ function PackingListView({
                 <button
                   onClick={() => toggleCY(item.id)}
                   className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border font-bold text-[11px] transition-all ${
-                    item.checkedCY
-                      ? "bg-amber-500 border-amber-500 text-white shadow-sm"
-                      : "bg-stone-50 border-stone-200 text-stone-400 hover:bg-stone-100"
+                    item.checkedCY ? "bg-amber-500 text-white" : "bg-stone-50"
                   }`}
                 >
                   {item.checkedCY ? (
@@ -1907,7 +1911,7 @@ function PackingListView({
                 </button>
                 <button
                   onClick={() => onDeletePackingItem(item.id)}
-                  className="p-1.5 text-stone-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors ml-1"
+                  className="p-1.5 text-stone-300 hover:text-red-500"
                 >
                   <Trash2 className="w-4 h-4" />
                 </button>
@@ -1916,7 +1920,6 @@ function PackingListView({
           ))
         )}
       </div>
-
       {recommendedItems.length > 0 && (
         <div>
           <h3 className="text-[11px] font-bold text-stone-400 uppercase tracking-widest mb-3 flex items-center gap-1.5 px-1">
@@ -1927,7 +1930,7 @@ function PackingListView({
               <button
                 key={idx}
                 onClick={() => handleAddRecommended(itemStr)}
-                className="bg-white border border-stone-200 text-stone-600 px-3.5 py-2 rounded-xl text-xs font-bold hover:bg-stone-50 hover:border-stone-300 transition-colors flex items-center gap-1.5 shadow-sm active:scale-95"
+                className="bg-white border border-stone-200 text-stone-600 px-3.5 py-2 rounded-xl text-xs font-bold hover:bg-stone-50 transition-colors flex items-center gap-1.5 shadow-sm active:scale-95"
               >
                 <Plus className="w-3.5 h-3.5 text-stone-400" /> {itemStr}
               </button>
